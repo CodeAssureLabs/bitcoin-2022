@@ -1,5 +1,5 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
-// Copyright (c) 2009-2021 The Bitcoin Core developers
+// Copyright (c) 2009-2022 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -19,6 +19,9 @@ class ArgsManager;
 namespace interfaces {
 struct BlockAndHeaderTipInfo;
 }
+namespace kernel {
+struct Context;
+}
 namespace node {
 struct NodeContext;
 } // namespace node
@@ -35,7 +38,7 @@ void InitParameterInteraction(ArgsManager& args);
  *  @note This can be done before daemonization. Do not call Shutdown() if this function fails.
  *  @pre Parameters should be parsed and config file should be read.
  */
-bool AppInitBasicSetup(const ArgsManager& args);
+bool AppInitBasicSetup(const ArgsManager& args, std::atomic<int>& exit_status);
 /**
  * Initialization: parameter interaction.
  * @note This can be done before daemonization. Do not call Shutdown() if this function fails.
@@ -43,11 +46,11 @@ bool AppInitBasicSetup(const ArgsManager& args);
  */
 bool AppInitParameterInteraction(const ArgsManager& args);
 /**
- * Initialization sanity checks: ecc init, sanity checks, dir lock.
+ * Initialization sanity checks.
  * @note This can be done before daemonization. Do not call Shutdown() if this function fails.
  * @pre Parameters should be parsed and config file should be read, AppInitParameterInteraction should have been called.
  */
-bool AppInitSanityChecks();
+bool AppInitSanityChecks(const kernel::Context& kernel);
 /**
  * Lock bitcoin core data directory.
  * @note This should only be done after daemonization. Do not call Shutdown() if this function fails.
@@ -69,5 +72,8 @@ bool AppInitMain(node::NodeContext& node, interfaces::BlockAndHeaderTipInfo* tip
  * Register all arguments with the ArgsManager
  */
 void SetupServerArgs(ArgsManager& argsman);
+
+/** Validates requirements to run the indexes and spawns each index initial sync thread */
+bool StartIndexBackgroundSync(node::NodeContext& node);
 
 #endif // BITCOIN_INIT_H
