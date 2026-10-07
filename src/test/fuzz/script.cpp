@@ -1,4 +1,4 @@
-// Copyright (c) 2019-2021 The Bitcoin Core developers
+// Copyright (c) 2019-2022 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -16,12 +16,13 @@
 #include <script/script_error.h>
 #include <script/sign.h>
 #include <script/signingprovider.h>
-#include <script/standard.h>
+#include <script/solver.h>
 #include <streams.h>
 #include <test/fuzz/FuzzedDataProvider.h>
 #include <test/fuzz/fuzz.h>
 #include <test/fuzz/util.h>
 #include <univalue.h>
+#include <util/chaintype.h>
 
 #include <algorithm>
 #include <cassert>
@@ -32,13 +33,10 @@
 
 void initialize_script()
 {
-    // Fuzzers using pubkey must hold an ECCVerifyHandle.
-    static const ECCVerifyHandle verify_handle;
-
-    SelectParams(CBaseChainParams::REGTEST);
+    SelectParams(ChainType::REGTEST);
 }
 
-FUZZ_TARGET_INIT(script, initialize_script)
+FUZZ_TARGET(script, .init = initialize_script)
 {
     FuzzedDataProvider fuzzed_data_provider(buffer.data(), buffer.size());
     const CScript script{ConsumeScript(fuzzed_data_provider)};
@@ -55,7 +53,7 @@ FUZZ_TARGET_INIT(script, initialize_script)
     }
 
     TxoutType which_type;
-    bool is_standard_ret = IsStandard(script, which_type);
+    bool is_standard_ret = IsStandard(script, std::nullopt, which_type);
     if (!is_standard_ret) {
         assert(which_type == TxoutType::NONSTANDARD ||
                which_type == TxoutType::NULL_DATA ||
@@ -89,7 +87,6 @@ FUZZ_TARGET_INIT(script, initialize_script)
     const FlatSigningProvider signing_provider;
     (void)InferDescriptor(script, signing_provider);
     (void)IsSegWitOutput(signing_provider, script);
-    (void)IsSolvable(signing_provider, script);
 
     (void)RecursiveDynamicUsage(script);
 

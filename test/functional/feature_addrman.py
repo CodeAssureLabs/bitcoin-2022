@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Copyright (c) 2021 The Bitcoin Core developers
+# Copyright (c) 2021-2022 The Bitcoin Core developers
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 """Test addrman functionality"""
@@ -32,12 +32,12 @@ def serialize_addrman(
     r += struct.pack("B", format)
     r += struct.pack("B", INCOMPATIBILITY_BASE + lowest_compatible)
     r += ser_uint256(bucket_key)
-    r += struct.pack("i", len_new or len(new))
-    r += struct.pack("i", len_tried or len(tried))
+    r += struct.pack("<i", len_new or len(new))
+    r += struct.pack("<i", len_tried or len(tried))
     ADDRMAN_NEW_BUCKET_COUNT = 1 << 10
-    r += struct.pack("i", ADDRMAN_NEW_BUCKET_COUNT ^ (1 << 30))
+    r += struct.pack("<i", ADDRMAN_NEW_BUCKET_COUNT ^ (1 << 30))
     for _ in range(ADDRMAN_NEW_BUCKET_COUNT):
-        r += struct.pack("i", 0)
+        r += struct.pack("<i", 0)
     checksum = hash256(r)
     r += mock_checksum or checksum
     return r
@@ -53,7 +53,7 @@ class AddrmanTest(BitcoinTestFramework):
         self.num_nodes = 1
 
     def run_test(self):
-        peers_dat = os.path.join(self.nodes[0].datadir, self.chain, "peers.dat")
+        peers_dat = os.path.join(self.nodes[0].chain_path, "peers.dat")
         init_error = lambda reason: (
             f"Error: Invalid or corrupt peers.dat \\({reason}\\). If you believe this "
             f"is a bug, please report it to {self.config['environment']['PACKAGE_BUGREPORT']}. "
@@ -67,6 +67,17 @@ class AddrmanTest(BitcoinTestFramework):
         with self.nodes[0].assert_debug_log(["Loaded 0 addresses from peers.dat"]):
             self.start_node(0, extra_args=["-checkaddrman=1"])
         assert_equal(self.nodes[0].getnodeaddresses(), [])
+
+        self.log.info("Check that addrman with negative lowest_compatible cannot be read")
+        self.stop_node(0)
+        write_addrman(peers_dat, lowest_compatible=-32)
+        self.nodes[0].assert_start_raises_init_error(
+            expected_msg=init_error(
+                "Corrupted addrman database: The compat value \\(0\\) is lower "
+                "than the expected minimum value 32.: (.+)"
+            ),
+            match=ErrorMatch.FULL_REGEX,
+        )
 
         self.log.info("Check that addrman from future is overwritten with new addrman")
         self.stop_node(0)
@@ -84,7 +95,7 @@ class AddrmanTest(BitcoinTestFramework):
         with open(peers_dat, "wb") as f:
             f.write(serialize_addrman()[:-1])
         self.nodes[0].assert_start_raises_init_error(
-            expected_msg=init_error("CAutoFile::read: end of file.*"),
+            expected_msg=init_error("AutoFile::read: end of file.*"),
             match=ErrorMatch.FULL_REGEX,
         )
 
