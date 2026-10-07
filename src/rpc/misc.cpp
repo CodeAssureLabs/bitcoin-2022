@@ -116,7 +116,7 @@ static RPCHelpMan createmultisig()
                         {RPCResult::Type::STR, "address", "The value of the new multisig address."},
                         {RPCResult::Type::STR_HEX, "redeemScript", "The string value of the hex-encoded redemption script."},
                         {RPCResult::Type::STR, "descriptor", "The descriptor for this multisig"},
-                        {RPCResult::Type::ARR, "warnings", /* optional */ true, "Any warnings resulting from the creation of this multisig",
+                        {RPCResult::Type::ARR, "warnings", /*optional=*/true, "Any warnings resulting from the creation of this multisig",
                         {
                             {RPCResult::Type::STR, "", ""},
                         }},
@@ -484,9 +484,8 @@ static RPCHelpMan mockscheduler()
         throw std::runtime_error("delta_time must be between 1 and 3600 seconds (1 hr)");
     }
 
-    auto node_context = util::AnyPtr<NodeContext>(request.context);
+    auto node_context = CHECK_NONFATAL(util::AnyPtr<NodeContext>(request.context));
     // protect against null pointer dereference
-    CHECK_NONFATAL(node_context);
     CHECK_NONFATAL(node_context->scheduler);
     node_context->scheduler->MockForward(std::chrono::seconds(delta_seconds));
 
@@ -646,17 +645,8 @@ static RPCHelpMan logging()
     uint32_t changed_log_categories = original_log_categories ^ updated_log_categories;
 
     // Update libevent logging if BCLog::LIBEVENT has changed.
-    // If the library version doesn't allow it, UpdateHTTPServerLogging() returns false,
-    // in which case we should clear the BCLog::LIBEVENT flag.
-    // Throw an error if the user has explicitly asked to change only the libevent
-    // flag and it failed.
     if (changed_log_categories & BCLog::LIBEVENT) {
-        if (!UpdateHTTPServerLogging(LogInstance().WillLogCategory(BCLog::LIBEVENT))) {
-            LogInstance().DisableCategory(BCLog::LIBEVENT);
-            if (changed_log_categories == BCLog::LIBEVENT) {
-            throw JSONRPCError(RPC_INVALID_PARAMETER, "libevent logging cannot be updated when using libevent before v2.1.1.");
-            }
-        }
+        UpdateHTTPServerLogging(LogInstance().WillLogCategory(BCLog::LIBEVENT));
     }
 
     UniValue result(UniValue::VOBJ);
@@ -800,33 +790,27 @@ static RPCHelpMan getindexinfo()
     };
 }
 
-void RegisterMiscRPCCommands(CRPCTable &t)
+void RegisterMiscRPCCommands(CRPCTable& t)
 {
-// clang-format off
-static const CRPCCommand commands[] =
-{ //  category              actor (function)
-  //  --------------------- ------------------------
-    { "control",            &getmemoryinfo,           },
-    { "control",            &logging,                 },
-    { "util",               &validateaddress,         },
-    { "util",               &createmultisig,          },
-    { "util",               &deriveaddresses,         },
-    { "util",               &getdescriptorinfo,       },
-    { "util",               &verifymessage,           },
-    { "util",               &signmessagewithprivkey,  },
-    { "util",               &getindexinfo,            },
-
-    /* Not shown in help */
-    { "hidden",             &setmocktime,             },
-    { "hidden",             &mockscheduler,           },
-    { "hidden",             &echo,                    },
-    { "hidden",             &echojson,                },
-    { "hidden",             &echoipc,                 },
+    static const CRPCCommand commands[]{
+        {"control", &getmemoryinfo},
+        {"control", &logging},
+        {"util", &validateaddress},
+        {"util", &createmultisig},
+        {"util", &deriveaddresses},
+        {"util", &getdescriptorinfo},
+        {"util", &verifymessage},
+        {"util", &signmessagewithprivkey},
+        {"util", &getindexinfo},
+        {"hidden", &setmocktime},
+        {"hidden", &mockscheduler},
+        {"hidden", &echo},
+        {"hidden", &echojson},
+        {"hidden", &echoipc},
 #if defined(USE_SYSCALL_SANDBOX)
-    { "hidden",             &invokedisallowedsyscall, },
+        {"hidden", &invokedisallowedsyscall},
 #endif // USE_SYSCALL_SANDBOX
-};
-// clang-format on
+    };
     for (const auto& c : commands) {
         t.appendCommand(c.name, &c);
     }

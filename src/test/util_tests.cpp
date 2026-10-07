@@ -17,6 +17,7 @@
 #include <util/message.h> // For MessageSign(), MessageVerify(), MESSAGE_MAGIC
 #include <util/moneystr.h>
 #include <util/overflow.h>
+#include <util/readwritefile.h>
 #include <util/spanparsing.h>
 #include <util/strencodings.h>
 #include <util/string.h>
@@ -24,9 +25,10 @@
 #include <util/vector.h>
 
 #include <array>
-#include <optional>
+#include <fstream>
 #include <limits>
 #include <map>
+#include <optional>
 #include <stdint.h>
 #include <string.h>
 #include <thread>
@@ -76,6 +78,31 @@ BOOST_AUTO_TEST_CASE(util_datadir)
     BOOST_CHECK_EQUAL(dd_norm, args.GetDataDirBase());
 }
 
+namespace {
+class NoCopyOrMove
+{
+public:
+    int i;
+    explicit NoCopyOrMove(int i) : i{i} { }
+
+    NoCopyOrMove() = delete;
+    NoCopyOrMove(const NoCopyOrMove&) = delete;
+    NoCopyOrMove(NoCopyOrMove&&) = delete;
+    NoCopyOrMove& operator=(const NoCopyOrMove&) = delete;
+    NoCopyOrMove& operator=(NoCopyOrMove&&) = delete;
+
+    operator bool() const { return i != 0; }
+
+    int get_ip1() { return i + 1; }
+    bool test()
+    {
+        // Check that Assume can be used within a lambda and still call methods
+        [&]() { Assume(get_ip1()); }();
+        return Assume(get_ip1() != 5);
+    }
+};
+} // namespace
+
 BOOST_AUTO_TEST_CASE(util_check)
 {
     // Check that Assert can forward
@@ -87,6 +114,14 @@ BOOST_AUTO_TEST_CASE(util_check)
     // Check that Assume can be used as unary expression
     const bool result{Assume(two == 2)};
     Assert(result);
+
+    // Check that Assert doesn't require copy/move
+    NoCopyOrMove x{9};
+    Assert(x).i += 3;
+    Assert(x).test();
+
+    // Check nested Asserts
+    BOOST_CHECK_EQUAL(Assert((Assert(x).test() ? 3 : 0)), 3);
 }
 
 BOOST_AUTO_TEST_CASE(util_criticalsection)
@@ -2314,6 +2349,55 @@ BOOST_AUTO_TEST_CASE(test_spanparsing)
     BOOST_CHECK_EQUAL(SpanToStr(results[3]), "");
 }
 
+BOOST_AUTO_TEST_CASE(test_SplitString)
+{
+    // Empty string.
+    {
+        std::vector<std::string> result = SplitString("", '-');
+        BOOST_CHECK_EQUAL(result.size(), 1);
+        BOOST_CHECK_EQUAL(result[0], "");
+    }
+
+    // Empty items.
+    {
+        std::vector<std::string> result = SplitString("-", '-');
+        BOOST_CHECK_EQUAL(result.size(), 2);
+        BOOST_CHECK_EQUAL(result[0], "");
+        BOOST_CHECK_EQUAL(result[1], "");
+    }
+
+    // More empty items.
+    {
+        std::vector<std::string> result = SplitString("--", '-');
+        BOOST_CHECK_EQUAL(result.size(), 3);
+        BOOST_CHECK_EQUAL(result[0], "");
+        BOOST_CHECK_EQUAL(result[1], "");
+        BOOST_CHECK_EQUAL(result[2], "");
+    }
+
+    // Separator is not present.
+    {
+        std::vector<std::string> result = SplitString("abc", '-');
+        BOOST_CHECK_EQUAL(result.size(), 1);
+        BOOST_CHECK_EQUAL(result[0], "abc");
+    }
+
+    // Basic behavior.
+    {
+        std::vector<std::string> result = SplitString("a-b", '-');
+        BOOST_CHECK_EQUAL(result.size(), 2);
+        BOOST_CHECK_EQUAL(result[0], "a");
+        BOOST_CHECK_EQUAL(result[1], "b");
+    }
+
+    // Case-sensitivity of the separator.
+    {
+        std::vector<std::string> result = SplitString("AAA", 'a');
+        BOOST_CHECK_EQUAL(result.size(), 1);
+        BOOST_CHECK_EQUAL(result[0], "AAA");
+    }
+}
+
 BOOST_AUTO_TEST_CASE(test_LogEscapeMessage)
 {
     // ASCII and UTF-8 must pass through unaltered.
@@ -2592,4 +2676,49 @@ BOOST_AUTO_TEST_CASE(util_ParseByteUnits)
     BOOST_CHECK(!ParseByteUnits("1x", noop));
 }
 
+BOOST_AUTO_TEST_CASE(util_ReadBinaryFile)
+{
+    fs::path tmpfolder = m_args.GetDataDirBase();
+    fs::path tmpfile = tmpfolder / "read_binary.dat";
+    std::string expected_text;
+    for (int i = 0; i < 30; i++) {
+        expected_text += "0123456789";
+    }
+    {
+        std::ofstream file{tmpfile};
+        file << expected_text;
+    }
+    {
+        // read all contents in file
+        auto [valid, text] = ReadBinaryFile(tmpfile);
+        BOOST_CHECK(valid);
+        BOOST_CHECK_EQUAL(text, expected_text);
+    }
+    {
+        // read half contents in file
+        auto [valid, text] = ReadBinaryFile(tmpfile, expected_text.size() / 2);
+        BOOST_CHECK(valid);
+        BOOST_CHECK_EQUAL(text, expected_text.substr(0, expected_text.size() / 2));
+    }
+    {
+        // read from non-existent file
+        fs::path invalid_file = tmpfolder / "invalid_binary.dat";
+        auto [valid, text] = ReadBinaryFile(invalid_file);
+        BOOST_CHECK(!valid);
+        BOOST_CHECK(text.empty());
+    }
+}
+
+BOOST_AUTO_TEST_CASE(util_WriteBinaryFile)
+{
+    fs::path tmpfolder = m_args.GetDataDirBase();
+    fs::path tmpfile = tmpfolder / "write_binary.dat";
+    std::string expected_text = "bitcoin";
+    auto valid = WriteBinaryFile(tmpfile, expected_text);
+    std::string actual_text;
+    std::ifstream file{tmpfile};
+    file >> actual_text;
+    BOOST_CHECK(valid);
+    BOOST_CHECK_EQUAL(actual_text, expected_text);
+}
 BOOST_AUTO_TEST_SUITE_END()

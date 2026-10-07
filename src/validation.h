@@ -131,14 +131,11 @@ extern uint256 hashAssumeValid;
 /** Minimum work we will assume exists on some valid chain. */
 extern arith_uint256 nMinimumChainWork;
 
-/** Best header we've seen so far (used for getheaders queries' starting points). */
-extern CBlockIndex *pindexBestHeader;
-
 /** Documentation for argument 'checklevel'. */
 extern const std::vector<std::string> CHECKLEVEL_DOC;
 
 /** Unload database information */
-void UnloadBlockIndex(CTxMemPool* mempool, ChainstateManager& chainman);
+void UnloadBlockIndex(CTxMemPool* mempool, ChainstateManager& chainman) EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
 /** Run instances of script checking worker threads */
 void StartScriptCheckWorkerThreads(int threads_num);
 /** Stop all of the script checking worker threads */
@@ -234,10 +231,18 @@ struct PackageMempoolAcceptResult
     * was a package-wide error (see result in m_state), m_tx_results will be empty.
     */
     std::map<const uint256, const MempoolAcceptResult> m_tx_results;
+    /** Package feerate, defined as the aggregated modified fees divided by the total virtual size
+     * of all transactions in the package.  May be unavailable if some inputs were not available or
+     * a transaction failure caused validation to terminate early. */
+    std::optional<CFeeRate> m_package_feerate;
 
     explicit PackageMempoolAcceptResult(PackageValidationState state,
                                         std::map<const uint256, const MempoolAcceptResult>&& results)
         : m_state{state}, m_tx_results(std::move(results)) {}
+
+    explicit PackageMempoolAcceptResult(PackageValidationState state, CFeeRate feerate,
+                                        std::map<const uint256, const MempoolAcceptResult>&& results)
+        : m_state{state}, m_tx_results(std::move(results)), m_package_feerate{feerate} {}
 
     /** Constructor to create a PackageMempoolAcceptResult from a single MempoolAcceptResult */
     explicit PackageMempoolAcceptResult(const uint256& wtxid, const MempoolAcceptResult& result)
@@ -273,16 +278,12 @@ PackageMempoolAcceptResult ProcessNewPackage(CChainState& active_chainstate, CTx
                                                    const Package& txns, bool test_accept)
                                                    EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 
-/** Transaction validation functions */
+/* Transaction policy functions */
 
 /**
  * Check if transaction will be final in the next block to be created.
- *
- * Calls IsFinalTx() with current block height and appropriate block time.
- *
- * See consensus/consensus.h for flag definitions.
  */
-bool CheckFinalTx(const CBlockIndex* active_chain_tip, const CTransaction &tx, int flags = -1) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
+bool CheckFinalTxAtTip(const CBlockIndex* active_chain_tip, const CTransaction& tx) EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
 
 /**
  * Check if transaction will be BIP68 final in the next block to be created on top of tip.
@@ -299,14 +300,11 @@ bool CheckFinalTx(const CBlockIndex* active_chain_tip, const CTransaction &tx, i
  * Optionally stores in LockPoints the resulting height and time calculated and the hash
  * of the block needed for calculation or skips the calculation and uses the LockPoints
  * passed in for evaluation.
- * The LockPoints should not be considered valid if CheckSequenceLocks returns false.
- *
- * See consensus/consensus.h for flag definitions.
+ * The LockPoints should not be considered valid if CheckSequenceLocksAtTip returns false.
  */
-bool CheckSequenceLocks(CBlockIndex* tip,
+bool CheckSequenceLocksAtTip(CBlockIndex* tip,
                         const CCoinsView& coins_view,
                         const CTransaction& tx,
-                        int flags,
                         LockPoints* lp = nullptr,
                         bool useExistingLockPoints = false);
 
@@ -693,7 +691,7 @@ public:
     bool IsInitialBlockDownload() const;
 
     /** Find the last common block of this chain and a locator. */
-    CBlockIndex* FindForkInGlobalIndex(const CBlockLocator& locator) const EXCLUSIVE_LOCKS_REQUIRED(cs_main);
+    const CBlockIndex* FindForkInGlobalIndex(const CBlockLocator& locator) const EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 
     /**
      * Make various assertions about the state of the block index.
@@ -836,7 +834,7 @@ private:
     bool m_snapshot_validated{false};
 
     CBlockIndex* m_best_invalid;
-    friend bool node::BlockManager::LoadBlockIndex(const Consensus::Params&, ChainstateManager&);
+    friend bool node::BlockManager::LoadBlockIndex(const Consensus::Params&);
 
     //! Internal helper for ActivateSnapshot().
     [[nodiscard]] bool PopulateAndValidateSnapshot(
@@ -881,6 +879,9 @@ public:
      * instead of putting things in this set.
      */
     std::set<CBlockIndex*> m_failed_blocks;
+
+    /** Best header we've seen so far (used for getheaders queries' starting points). */
+    CBlockIndex* m_best_header = nullptr;
 
     //! The total number of bytes available for us to use across all in-memory
     //! coins caches. This will be split somehow across chainstates.
@@ -991,17 +992,13 @@ public:
     //! Unload block index and chain data before shutdown.
     void Unload() EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
 
-    //! Clear (deconstruct) chainstate data.
-    void Reset();
-
     //! Check to see if caches are out of balance and if so, call
     //! ResizeCoinsCaches() as needed.
     void MaybeRebalanceCaches() EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
 
     ~ChainstateManager() {
         LOCK(::cs_main);
-        UnloadBlockIndex(/* mempool */ nullptr, *this);
-        Reset();
+        UnloadBlockIndex(/*mempool=*/nullptr, *this);
     }
 };
 
