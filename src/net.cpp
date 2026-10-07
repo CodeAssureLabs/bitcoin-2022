@@ -196,7 +196,7 @@ static std::vector<CAddress> ConvertSeeds(const std::vector<uint8_t> &vSeedsIn)
         CAddress addr{endpoint, GetDesirableServiceFlags(NODE_NONE)};
         addr.nTime = GetTime() - rng.randrange(nOneWeek) - nOneWeek;
         LogPrint(BCLog::NET, "Added hardcoded seed: %s\n", addr.ToString());
-        vSeedsOut.push_back(addr);
+        vSeedsOut.push_back(std::move(addr));
     }
     return vSeedsOut;
 }
