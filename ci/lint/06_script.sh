@@ -1,30 +1,30 @@
 #!/usr/bin/env bash
 #
-# Copyright (c) 2018-2021 The Bitcoin Core developers
+# Copyright (c) 2018-present The Bitcoin Core developers
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-export LC_ALL=C
+export LC_ALL=C.UTF-8
 
-GIT_HEAD=$(git rev-parse HEAD)
-if [ -n "$CIRRUS_PR" ]; then
-  COMMIT_RANGE="${CIRRUS_BASE_SHA}..$GIT_HEAD"
-  test/lint/commit-script-check.sh "$COMMIT_RANGE"
+set -o errexit -o pipefail -o xtrace
+
+# Fixes permission issues when there is a container UID/GID mismatch with the owner
+# of the mounted bitcoin src dir.
+git config --global --add safe.directory /bitcoin
+
+export PATH="/python_env/bin:${PATH}"
+
+if [ -n "${LINT_CI_IS_PR}" ]; then
+  export COMMIT_RANGE="HEAD~..HEAD"
+  if [ "$(git rev-list -1 HEAD)" != "$(git rev-list -1 --merges HEAD)" ]; then
+    echo "Error: The top commit must be a merge commit, usually the remote 'pull/<PR_NUMBER>/merge' branch."
+    false
+  fi
 fi
-export COMMIT_RANGE
 
-# This only checks that the trees are pure subtrees, it is not doing a full
-# check with -r to not have to fetch all the remotes.
-test/lint/git-subtree-check.sh src/crypto/ctaes
-test/lint/git-subtree-check.sh src/secp256k1
-test/lint/git-subtree-check.sh src/minisketch
-test/lint/git-subtree-check.sh src/univalue
-test/lint/git-subtree-check.sh src/leveldb
-test/lint/git-subtree-check.sh src/crc32c
-test/lint/check-doc.py
-test/lint/lint-all.sh
+RUST_BACKTRACE=1 cargo run --manifest-path "./test/lint/test_runner/Cargo.toml" -- "$@"
 
-if [ "$CIRRUS_REPO_FULL_NAME" = "bitcoin/bitcoin" ] && [ "$CIRRUS_PR" = "" ] ; then
+if [ "${LINT_CI_SANITY_CHECK_COMMIT_SIG}" = "1" ] ; then
     # Sanity check only the last few commits to get notified of missing sigs,
     # missing keys, or expired keys. Usually there is only one new merge commit
     # per push on the master branch and a few commits on release branches, so
@@ -32,11 +32,8 @@ if [ "$CIRRUS_REPO_FULL_NAME" = "bitcoin/bitcoin" ] && [ "$CIRRUS_PR" = "" ] ; t
     git log HEAD~10 -1 --format='%H' > ./contrib/verify-commits/trusted-sha512-root-commit
     git log HEAD~10 -1 --format='%H' > ./contrib/verify-commits/trusted-git-root
     mapfile -t KEYS < contrib/verify-commits/trusted-keys
+    git config user.email "ci@ci.ci"
+    git config user.name "ci"
     ${CI_RETRY_EXE} gpg --keyserver hkps://keys.openpgp.org --recv-keys "${KEYS[@]}" &&
     ./contrib/verify-commits/verify-commits.py;
-fi
-
-if [ -n "$COMMIT_RANGE" ]; then
-  echo
-  git log --no-merges --oneline "$COMMIT_RANGE"
 fi

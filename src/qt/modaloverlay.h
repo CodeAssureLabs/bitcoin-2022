@@ -1,4 +1,4 @@
-// Copyright (c) 2016-2020 The Bitcoin Core developers
+// Copyright (c) 2016-present The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -10,7 +10,7 @@
 #include <QWidget>
 
 //! The required delta of headers to the estimated number of available headers until we show the IBD progress
-static constexpr int HEADER_HEIGHT_DELTA_SYNC = 24;
+inline constexpr int HEADER_HEIGHT_DELTA_SYNC = 24;
 
 namespace Ui {
     class ModalOverlay;
@@ -26,7 +26,7 @@ public:
     ~ModalOverlay();
 
     void tipUpdate(int count, const QDateTime& blockDate, double nVerificationProgress);
-    void setKnownBestHeight(int count, const QDateTime& blockDate);
+    void setKnownBestHeight(int count, const QDateTime& blockDate, bool presync);
 
     // will show or hide the modal layer
     void showHide(bool hide = false, bool userRequested = false);
@@ -45,13 +45,14 @@ protected:
 
 private:
     Ui::ModalOverlay *ui;
-    int bestHeaderHeight; //best known height (based on the headers)
+    int bestHeaderHeight{0}; // best known height (based on the headers)
     QDateTime bestHeaderDate;
     QVector<QPair<qint64, double> > blockProcessTime;
-    bool layerIsVisible;
-    bool userClosed;
+    bool layerIsVisible{false};
+    bool userClosed{false};
     QPropertyAnimation m_animation;
     void UpdateHeaderSyncLabel();
+    void UpdateHeaderPresyncLabel(int height, const QDateTime& blockDate);
 };
 
 #endif // BITCOIN_QT_MODALOVERLAY_H

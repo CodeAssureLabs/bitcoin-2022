@@ -1,4 +1,4 @@
-// Copyright (c) 2011-2021 The Bitcoin Core developers
+// Copyright (c) 2011-present The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -20,6 +20,8 @@
 #include <QLatin1Char>
 #include <QLatin1String>
 
+using util::ToString;
+
 RecentRequestsTableModel::RecentRequestsTableModel(WalletModel *parent) :
     QAbstractTableModel(parent), walletModel(parent)
 {
@@ -34,10 +36,7 @@ RecentRequestsTableModel::RecentRequestsTableModel(WalletModel *parent) :
     connect(walletModel->getOptionsModel(), &OptionsModel::displayUnitChanged, this, &RecentRequestsTableModel::updateDisplayUnit);
 }
 
-RecentRequestsTableModel::~RecentRequestsTableModel()
-{
-    /* Intentionally left empty */
-}
+RecentRequestsTableModel::~RecentRequestsTableModel() = default;
 
 int RecentRequestsTableModel::rowCount(const QModelIndex &parent) const
 {
@@ -178,7 +177,7 @@ void RecentRequestsTableModel::addNewRequest(const SendCoinsRecipient &recipient
     newEntry.date = QDateTime::currentDateTime();
     newEntry.recipient = recipient;
 
-    CDataStream ss(SER_DISK, CLIENT_VERSION);
+    DataStream ss{};
     ss << newEntry;
 
     if (!walletModel->wallet().setAddressReceiveRequest(DecodeDestination(recipient.address.toStdString()), ToString(newEntry.id), ss.str()))
@@ -190,8 +189,7 @@ void RecentRequestsTableModel::addNewRequest(const SendCoinsRecipient &recipient
 // called from ctor when loading from wallet
 void RecentRequestsTableModel::addNewRequest(const std::string &recipient)
 {
-    std::vector<uint8_t> data(recipient.begin(), recipient.end());
-    CDataStream ss(data, SER_DISK, CLIENT_VERSION);
+    SpanReader ss{MakeByteSpan(recipient)};
 
     RecentRequestEntry entry;
     ss >> entry;

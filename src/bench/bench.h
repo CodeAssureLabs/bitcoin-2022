@@ -1,20 +1,20 @@
-// Copyright (c) 2015-2021 The Bitcoin Core developers
+// Copyright (c) 2015-present The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #ifndef BITCOIN_BENCH_BENCH_H
 #define BITCOIN_BENCH_BENCH_H
 
-#include <fs.h>
+#include <bench/nanobench.h> // IWYU pragma: export
+#include <util/fs.h>
 #include <util/macros.h>
+#include <util/time.h>
 
-#include <chrono>
 #include <functional>
 #include <map>
 #include <string>
+#include <string_view>
 #include <vector>
-
-#include <bench/nanobench.h>
 
 /*
  * Usage:
@@ -39,31 +39,34 @@ namespace benchmark {
 
 using ankerl::nanobench::Bench;
 
-typedef std::function<void(Bench&)> BenchFunction;
+using BenchFunction = std::function<void(Bench&)>;
 
 struct Args {
     bool is_list_only;
+    bool sanity_check;
     std::chrono::milliseconds min_time;
     std::vector<double> asymptote;
     fs::path output_csv;
     fs::path output_json;
     std::string regex_filter;
+    std::vector<std::string> setup_args;
 };
 
 class BenchRunner
 {
-    typedef std::map<std::string, BenchFunction> BenchmarkMap;
+    // maps from "name" -> function
+    using BenchmarkMap = std::map<std::string, BenchFunction>;
     static BenchmarkMap& benchmarks();
 
 public:
-    BenchRunner(std::string name, BenchFunction func);
+    BenchRunner(std::string_view name, BenchFunction func);
 
     static void RunAll(const Args& args);
 };
 } // namespace benchmark
 
-// BENCHMARK(foo) expands to:  benchmark::BenchRunner bench_11foo("foo", foo);
+// BENCHMARK(foo); expands to:  benchmark::BenchRunner bench_runner_foo{"foo", foo};
 #define BENCHMARK(n) \
-    benchmark::BenchRunner PASTE2(bench_, PASTE2(__LINE__, n))(STRINGIZE(n), n);
+    benchmark::BenchRunner PASTE2(bench_runner_, n) { STRINGIZE(n), n }
 
 #endif // BITCOIN_BENCH_BENCH_H

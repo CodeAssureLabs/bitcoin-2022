@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Copyright (c) 2014-2021 The Bitcoin Core developers
+# Copyright (c) 2014-present The Bitcoin Core developers
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 """Test the listreceivedbyaddress, listreceivedbylabel, getreceivedybaddress, and getreceivedbylabel RPCs."""
@@ -18,19 +18,16 @@ from test_framework.wallet_util import test_address
 class ReceivedByTest(BitcoinTestFramework):
     def set_test_params(self):
         self.num_nodes = 2
-        # Test deprecated exclude coinbase on second node
-        self.extra_args = [[], ["-deprecatedrpc=exclude_coinbase"]]
+        # whitelist peers to speed up tx relay / mempool sync
+        self.noban_tx_relay = True
 
     def skip_test_if_missing_module(self):
         self.skip_if_no_wallet()
         self.skip_if_no_cli()
 
     def run_test(self):
-        # Generate block to get out of IBD
-        self.generate(self.nodes[0], 1)
-
         # save the number of coinbase reward addresses so far
-        num_cb_reward_addresses = len(self.nodes[1].listreceivedbyaddress(minconf=0, include_empty=True, include_watchonly=True))
+        num_cb_reward_addresses = len(self.nodes[1].listreceivedbyaddress(minconf=0, include_empty=True))
 
         self.log.info("listreceivedbyaddress Test")
 
@@ -62,10 +59,15 @@ class ReceivedByTest(BitcoinTestFramework):
                             {"address": empty_addr},
                             {"address": empty_addr, "label": "", "amount": 0, "confirmations": 0, "txids": []})
 
+        # No returned addy should be a change addr
+        for node in self.nodes:
+            for addr_obj in node.listreceivedbyaddress():
+                assert_equal(node.getaddressinfo(addr_obj["address"])["ischange"], False)
+
         # Test Address filtering
         # Only on addr
         expected = {"address": addr, "label": "", "amount": Decimal("0.1"), "confirmations": 10, "txids": [txid, ]}
-        res = self.nodes[1].listreceivedbyaddress(minconf=0, include_empty=True, include_watchonly=True, address_filter=addr)
+        res = self.nodes[1].listreceivedbyaddress(minconf=0, include_empty=True, address_filter=addr)
         assert_array_result(res, {"address": addr}, expected)
         assert_equal(len(res), 1)
         # Test for regression on CLI calls with address string (#14173)
@@ -73,7 +75,7 @@ class ReceivedByTest(BitcoinTestFramework):
         assert_array_result(cli_res, {"address": addr}, expected)
         assert_equal(len(cli_res), 1)
         # Error on invalid address
-        assert_raises_rpc_error(-4, "address_filter parameter was invalid", self.nodes[1].listreceivedbyaddress, minconf=0, include_empty=True, include_watchonly=True, address_filter="bamboozling")
+        assert_raises_rpc_error(-4, "address_filter parameter was invalid", self.nodes[1].listreceivedbyaddress, minconf=0, include_empty=True, address_filter="bamboozling")
         # Another address receive money
         res = self.nodes[1].listreceivedbyaddress(0, True, True)
         assert_equal(len(res), 2 + num_cb_reward_addresses)  # Right now 2 entries
@@ -99,6 +101,17 @@ class ReceivedByTest(BitcoinTestFramework):
         res = self.nodes[1].listreceivedbyaddress(0, True, True, other_addr)
         assert_equal(len(res), 0)
 
+        self.log.info("listreceivedbyaddress and listreceivedbylabel exclude not owned addresses")
+        # setlabel assigns a "send" purpose when the wallet doesn't own the address.
+        send_label = "external-address"
+        external_addr = self.nodes[0].getnewaddress(send_label)
+        self.nodes[1].setlabel(external_addr, send_label)
+        assert_equal(self.nodes[1].getaddressinfo(external_addr)["ismine"], False)
+        assert_array_result(self.nodes[1].listreceivedbyaddress(minconf=0, include_empty=True),
+                            {"address": external_addr}, {}, True)
+        assert_array_result(self.nodes[1].listreceivedbylabel(minconf=0, include_empty=True),
+                            {"label": send_label}, {}, True)
+
         self.log.info("getreceivedbyaddress Test")
 
         # Send from node 0 to 1
@@ -122,6 +135,17 @@ class ReceivedByTest(BitcoinTestFramework):
         # Trying to getreceivedby for an address the wallet doesn't own should return an error
         assert_raises_rpc_error(-4, "Address not found in wallet", self.nodes[0].getreceivedbyaddress, addr)
 
+        # Test multiple transactions to the same address
+        addr_with_multiple_txs = self.nodes[1].getnewaddress()
+        self.nodes[0].sendtoaddress(addr_with_multiple_txs, Decimal("0.1"))
+        self.nodes[0].sendtoaddress(addr_with_multiple_txs, Decimal("0.2"))
+        self.generate(self.nodes[0], 1)
+        balance = self.nodes[1].getreceivedbyaddress(addr_with_multiple_txs)
+        assert_equal(balance, Decimal("0.3"))
+
+        # Test invalid address format error
+        assert_raises_rpc_error(-5, "Invalid Bitcoin address", self.nodes[1].getreceivedbyaddress, "invalid_address")
+
         self.log.info("listreceivedbylabel + getreceivedbylabel Test")
 
         # set pre-state
@@ -134,12 +158,15 @@ class ReceivedByTest(BitcoinTestFramework):
         txid = self.nodes[0].sendtoaddress(addr, 0.1)
         self.sync_all()
 
+        # getreceivedbylabel returns an error if the wallet doesn't own the label
+        assert_raises_rpc_error(-4, "Label not found in wallet", self.nodes[0].getreceivedbylabel, "dummy")
+
         # listreceivedbylabel should return received_by_label_json because of 0 confirmations
         assert_array_result(self.nodes[1].listreceivedbylabel(),
                             {"label": label},
                             received_by_label_json)
 
-        # getreceivedbyaddress should return same balance because of 0 confirmations
+        # getreceivedbylabel should return same balance because of 0 confirmations
         balance = self.nodes[1].getreceivedbylabel(label)
         assert_equal(balance, balance_by_label)
 
@@ -172,7 +199,7 @@ class ReceivedByTest(BitcoinTestFramework):
         address = self.nodes[0].getnewaddress(label)
 
         reward = Decimal("25")
-        self.generatetoaddress(self.nodes[0], 1, address, sync_fun=self.no_op)
+        self.generatetoaddress(self.nodes[0], 1, address)
         hash = self.nodes[0].getbestblockhash()
 
         self.log.info("getreceivedbyaddress returns nothing with defaults")
@@ -212,7 +239,7 @@ class ReceivedByTest(BitcoinTestFramework):
                             {"label": label, "amount": reward})
 
         self.log.info("Generate 100 more blocks")
-        self.generate(self.nodes[0], COINBASE_MATURITY, sync_fun=self.no_op)
+        self.generate(self.nodes[0], COINBASE_MATURITY)
 
         self.log.info("getreceivedbyaddress returns reward with defaults")
         balance = self.nodes[0].getreceivedbyaddress(address)
@@ -253,35 +280,6 @@ class ReceivedByTest(BitcoinTestFramework):
                             {"label": label},
                             {}, True)
 
-        # Test exclude_coinbase
-        address2 = self.nodes[1].getnewaddress(label)
-        self.generatetoaddress(self.nodes[1], COINBASE_MATURITY + 1, address2, sync_fun=self.no_op)
-
-        self.log.info("getreceivedbyaddress returns nothing when excluding coinbase")
-        balance = self.nodes[1].getreceivedbyaddress(address2)
-        assert_equal(balance, 0)
-
-        self.log.info("getreceivedbylabel returns nothing when excluding coinbase")
-        balance = self.nodes[1].getreceivedbylabel("label")
-        assert_equal(balance, 0)
-
-        self.log.info("listreceivedbyaddress does not include address when excluding coinbase")
-        assert_array_result(self.nodes[1].listreceivedbyaddress(),
-                            {"address": address2},
-                            {}, True)
-
-        self.log.info("listreceivedbylabel does not include label when excluding coinbase")
-        assert_array_result(self.nodes[1].listreceivedbylabel(),
-                            {"label": label},
-                            {}, True)
-
-        self.log.info("getreceivedbyaddress throws when setting include_immature_coinbase with deprecated exclude_coinbase")
-        assert_raises_rpc_error(-8, 'include_immature_coinbase is incompatible with deprecated exclude_coinbase', self.nodes[1].getreceivedbyaddress, address2, 1, True)
-
-
-        self.log.info("listreceivedbyaddress throws when setting include_immature_coinbase with deprecated exclude_coinbase")
-        assert_raises_rpc_error(-8, 'include_immature_coinbase is incompatible with deprecated exclude_coinbase', self.nodes[1].listreceivedbyaddress, 1, False, False, "", True)
-
 
 if __name__ == '__main__':
-    ReceivedByTest().main()
+    ReceivedByTest(__file__).main()

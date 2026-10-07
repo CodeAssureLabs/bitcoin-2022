@@ -1,18 +1,18 @@
-// Copyright (c) 2011-2021 The Bitcoin Core developers
+// Copyright (c) 2011-present The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include <qt/walletframe.h>
 
-#include <fs.h>
-#include <node/ui_interface.h>
+#include <node/interface_ui.h>
 #include <psbt.h>
 #include <qt/guiutil.h>
 #include <qt/overviewpage.h>
 #include <qt/psbtoperationsdialog.h>
 #include <qt/walletmodel.h>
 #include <qt/walletview.h>
-#include <util/system.h>
+#include <util/fs.h>
+#include <util/fs_helpers.h>
 
 #include <cassert>
 #include <fstream>
@@ -55,9 +55,7 @@ WalletFrame::WalletFrame(const PlatformStyle* _platformStyle, QWidget* parent)
     walletStack->addWidget(no_wallet_group);
 }
 
-WalletFrame::~WalletFrame()
-{
-}
+WalletFrame::~WalletFrame() = default;
 
 void WalletFrame::setClientModel(ClientModel *_clientModel)
 {
@@ -72,7 +70,7 @@ bool WalletFrame::addView(WalletView* walletView)
 {
     if (!clientModel) return false;
 
-    if (mapWalletViews.count(walletView->getWalletModel()) > 0) return false;
+    if (mapWalletViews.contains(walletView->getWalletModel())) return false;
 
     walletView->setClientModel(clientModel);
     walletView->showOutOfSyncWarning(bOutOfSync);
@@ -92,7 +90,7 @@ bool WalletFrame::addView(WalletView* walletView)
 
 void WalletFrame::setCurrentWallet(WalletModel* wallet_model)
 {
-    if (mapWalletViews.count(wallet_model) == 0) return;
+    if (!mapWalletViews.contains(wallet_model)) return;
 
     // Stop the effect of hidden widgets on the size hint of the shown one in QStackedWidget.
     WalletView* view_about_to_hide = currentWalletView();
@@ -118,7 +116,7 @@ void WalletFrame::setCurrentWallet(WalletModel* wallet_model)
 
 void WalletFrame::removeWallet(WalletModel* wallet_model)
 {
-    if (mapWalletViews.count(wallet_model) == 0) return;
+    if (!mapWalletViews.contains(wallet_model)) return;
 
     WalletView *walletView = mapWalletViews.take(wallet_model);
     walletStack->removeWidget(walletView);
@@ -194,16 +192,16 @@ void WalletFrame::gotoVerifyMessageTab(QString addr)
 
 void WalletFrame::gotoLoadPSBT(bool from_clipboard)
 {
-    std::string data;
+    std::vector<unsigned char> data;
 
     if (from_clipboard) {
         std::string raw = QApplication::clipboard()->text().toStdString();
-        bool invalid;
-        data = DecodeBase64(raw, &invalid);
-        if (invalid) {
+        auto result = DecodeBase64(raw);
+        if (!result) {
             Q_EMIT message(tr("Error"), tr("Unable to decode PSBT from clipboard (invalid base64)"), CClientUIInterface::MSG_ERROR);
             return;
         }
+        data = std::move(*result);
     } else {
         QString filename = GUIUtil::getOpenFileName(this,
             tr("Load Transaction Data"), QString(),
@@ -214,18 +212,25 @@ void WalletFrame::gotoLoadPSBT(bool from_clipboard)
             return;
         }
         std::ifstream in{filename.toLocal8Bit().data(), std::ios::binary};
-        data = std::string(std::istreambuf_iterator<char>{in}, {});
+        data.assign(std::istreambuf_iterator<char>{in}, {});
+
+        // Some psbt files may be base64 strings in the file rather than binary data
+        std::string b64_str{data.begin(), data.end()};
+        b64_str.erase(b64_str.find_last_not_of(" \t\n\r\f\v") + 1); // Trim trailing whitespace
+        auto b64_dec = DecodeBase64(b64_str);
+        if (b64_dec.has_value()) {
+            data = b64_dec.value();
+        }
     }
 
-    std::string error;
-    PartiallySignedTransaction psbtx;
-    if (!DecodeRawPSBT(psbtx, data, error)) {
-        Q_EMIT message(tr("Error"), tr("Unable to decode PSBT") + "\n" + QString::fromStdString(error), CClientUIInterface::MSG_ERROR);
+    util::Result<PartiallySignedTransaction> psbt_res = DecodeRawPSBT(MakeByteSpan(data));
+    if (!psbt_res) {
+        Q_EMIT message(tr("Error"), tr("Unable to decode PSBT") + "\n" + QString::fromStdString(util::ErrorString(psbt_res).original), CClientUIInterface::MSG_ERROR);
         return;
     }
 
     auto dlg = new PSBTOperationsDialog(this, currentWalletModel(), clientModel);
-    dlg->openWithPSBT(psbtx);
+    dlg->openWithPSBT(*psbt_res);
     GUIUtil::ShowModalDialogAsynchronously(dlg);
 }
 

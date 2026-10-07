@@ -1,81 +1,110 @@
-NetBSD build guide
-======================
-(updated for NetBSD 8.0)
+# NetBSD Build Guide
 
-This guide describes how to build bitcoind and command-line utilities on NetBSD.
+Bitcoin Core is supported on all [supported NetBSD releases](https://www.netbsd.org/releases/).
 
-This guide does not contain instructions for building the GUI.
+This guide describes how to build bitcoind, command-line utilities, and GUI on the latest release.
 
-Preparation
--------------
+## Preparation
 
-You will need the following modules, which can be installed via pkgsrc or pkgin:
+### 1. Install Required Dependencies
 
+Install the required dependencies the usual way you [install software on NetBSD](https://www.netbsd.org/docs/guide/en/chap-boot.html#chap-boot-pkgsrc).
+The example commands below use `pkgin`.
+
+```bash
+pkgin install git cmake boost
 ```
-autoconf
-automake
-boost
-git
-gmake
-libevent
-libtool
-pkg-config
-python37
 
-git clone https://github.com/bitcoin/bitcoin.git
+SQLite is required for the wallet:
+
+```bash
+pkgin install sqlite3
 ```
+
+To build Bitcoin Core without the wallet, use `-DENABLE_WALLET=OFF`.
+
+Cap'n Proto is needed for IPC functionality (see [multiprocess.md](multiprocess.md)):
+
+```bash
+pkgin install capnproto pkgconf
+```
+
+Compile with `-DENABLE_IPC=OFF` if you do not need IPC functionality.
 
 See [dependencies.md](dependencies.md) for a complete overview.
 
-### Building BerkeleyDB
+### 2. Clone Bitcoin Repo
 
-BerkeleyDB is only necessary for the wallet functionality. To skip this, pass
-`--disable-wallet` to `./configure` and skip to the next section.
-
-It is recommended to use Berkeley DB 4.8. You cannot use the BerkeleyDB library
-from ports, for the same reason as boost above (g++/libstd++ incompatibility).
-If you have to build it yourself, you can use [the installation script included
-in contrib/](/contrib/install_db4.sh) like so:
+Clone the Bitcoin Core repository to a directory. All build scripts and commands will run from this directory.
 
 ```bash
-./contrib/install_db4.sh `pwd`
+git clone https://github.com/bitcoin/bitcoin.git
 ```
 
-from the root of the repository. Then set `BDB_PREFIX` for the next section:
+### 3. Install Optional Dependencies
+
+#### GUI Dependencies
+###### Qt6
+
+Bitcoin Core includes a GUI built with the cross-platform Qt Framework. To compile the GUI, we need to install
+the necessary parts of Qt, the libqrencode and pass `-DBUILD_GUI=ON`. Skip if you don't intend to use the GUI.
 
 ```bash
-export BDB_PREFIX="$PWD/db4"
+pkgin install qt6-qtbase qt6-qttools
 ```
 
-### Building Bitcoin Core
+###### libqrencode
 
-**Important**: Use `gmake` (the non-GNU `make` will exit with an error).
+The GUI will be able to encode addresses in QR codes unless this feature is explicitly disabled. To install libqrencode, run:
 
-With wallet:
 ```bash
-./autogen.sh
-./configure --with-gui=no CPPFLAGS="-I/usr/pkg/include" \
-    LDFLAGS="-L/usr/pkg/lib" \
-    BOOST_CPPFLAGS="-I/usr/pkg/include" \
-    BOOST_LDFLAGS="-L/usr/pkg/lib" \
-    BDB_LIBS="-L${BDB_PREFIX}/lib -ldb_cxx-4.8" \
-    BDB_CFLAGS="-I${BDB_PREFIX}/include" \
-    MAKE=gmake
+pkgin install qrencode
 ```
 
-Without wallet:
+Otherwise, if you don't need QR encoding support, use the `-DWITH_QRENCODE=OFF` option to disable this feature in order to compile the GUI.
+
+#### Notifications
+###### ZeroMQ
+
+Bitcoin Core can provide notifications via ZeroMQ. To compile ZMQ support, install the following dependency and pass `-DWITH_ZMQ=ON` when configuring.
 ```bash
-./autogen.sh
-./configure --with-gui=no --disable-wallet \
-    CPPFLAGS="-I/usr/pkg/include" \
-    LDFLAGS="-L/usr/pkg/lib" \
-    BOOST_CPPFLAGS="-I/usr/pkg/include" \
-    BOOST_LDFLAGS="-L/usr/pkg/lib" \
-    MAKE=gmake
+pkgin install zeromq pkgconf
 ```
+
+#### Test Suite Dependencies
+
+There is an included test suite that is useful for testing code changes when developing.
+To run the test suite (recommended), you will need to have Python 3 installed:
+
+```bash
+pkgin install python313 py313-zmq lsof
+```
+
+When the `lsof` binary package was built for a different point release, it might be necessary to force its installation as follows:
+
+```bash
+echo "CHECK_OSABI=no" >> /etc/pkg_install.conf
+pkgin install lsof
+```
+
+## Building Bitcoin Core
+
+### 1. Configuration
+
+There are many ways to configure Bitcoin Core. Here is an example that
+explicitly disables the wallet and GUI:
+
+```bash
+cmake -B build -DENABLE_WALLET=OFF -DBUILD_GUI=OFF
+```
+
+Run `cmake -B build -LH` to see the full list of available options.
+
+### 2. Compile
 
 Build and run the tests:
+
 ```bash
-gmake # use "-j N" here for N parallel jobs
-gmake check
+cmake --build build     # Append "-j N" for N parallel jobs.
+ctest --test-dir build  # Append "-j N" for N parallel tests.
 ```

@@ -1,4 +1,4 @@
-// Copyright (c) 2011-2021 The Bitcoin Core developers
+// Copyright (c) 2011-present The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -34,9 +34,8 @@ class TxViewDelegate : public QAbstractItemDelegate
 {
     Q_OBJECT
 public:
-    explicit TxViewDelegate(const PlatformStyle *_platformStyle, QObject *parent=nullptr):
-        QAbstractItemDelegate(parent), unit(BitcoinUnits::BTC),
-        platformStyle(_platformStyle)
+    explicit TxViewDelegate(const PlatformStyle* _platformStyle, QObject* parent = nullptr)
+        : QAbstractItemDelegate(parent), platformStyle(_platformStyle)
     {
         connect(this, &TxViewDelegate::width_changed, this, &TxViewDelegate::sizeHintChanged);
     }
@@ -67,14 +66,6 @@ public:
         {
             QBrush brush = qvariant_cast<QBrush>(value);
             foreground = brush.color();
-        }
-
-        if (index.data(TransactionTableModel::WatchonlyRole).toBool()) {
-            QIcon iconWatchonly = qvariant_cast<QIcon>(index.data(TransactionTableModel::WatchonlyDecorationRole));
-            QRect watchonlyRect(addressRect.left(), addressRect.top(), 16, addressRect.height());
-            iconWatchonly = platformStyle->TextColorIcon(iconWatchonly);
-            iconWatchonly.paint(painter, watchonlyRect);
-            addressRect.setLeft(addressRect.left() + watchonlyRect.width() + 5);
         }
 
         painter->setPen(foreground);
@@ -125,7 +116,7 @@ public:
         return {DECORATION_SIZE + 8 + minimum_text_width, DECORATION_SIZE};
     }
 
-    int unit;
+    BitcoinUnit unit{BitcoinUnit::BTC};
 
 Q_SIGNALS:
     //! An intermediate signal for emitting from the `paint() const` member function.
@@ -141,14 +132,10 @@ private:
 OverviewPage::OverviewPage(const PlatformStyle *platformStyle, QWidget *parent) :
     QWidget(parent),
     ui(new Ui::OverviewPage),
-    clientModel(nullptr),
-    walletModel(nullptr),
     m_platform_style{platformStyle},
     txdelegate(new TxViewDelegate(platformStyle, this))
 {
     ui->setupUi(this);
-
-    m_balances.balance = -1;
 
     // use a SingleColorIcon for the "out of sync warning" icon
     QIcon icon = m_platform_style->SingleColorIcon(QStringLiteral(":/icons/warning"));
@@ -178,8 +165,10 @@ void OverviewPage::handleTransactionClicked(const QModelIndex &index)
 void OverviewPage::setPrivacy(bool privacy)
 {
     m_privacy = privacy;
-    if (m_balances.balance != -1) {
-        setBalance(m_balances);
+    clientModel->getOptionsModel()->setOption(OptionsModel::OptionID::MaskValues, privacy);
+    const auto& balances = walletModel->getCachedBalance();
+    if (balances.balance != -1) {
+        setBalance(balances);
     }
 
     ui->listTransactions->setVisible(!m_privacy);
@@ -197,53 +186,17 @@ OverviewPage::~OverviewPage()
 
 void OverviewPage::setBalance(const interfaces::WalletBalances& balances)
 {
-    int unit = walletModel->getOptionsModel()->getDisplayUnit();
-    m_balances = balances;
-    if (walletModel->wallet().isLegacy()) {
-        if (walletModel->wallet().privateKeysDisabled()) {
-            ui->labelBalance->setText(BitcoinUnits::formatWithPrivacy(unit, balances.watch_only_balance, BitcoinUnits::SeparatorStyle::ALWAYS, m_privacy));
-            ui->labelUnconfirmed->setText(BitcoinUnits::formatWithPrivacy(unit, balances.unconfirmed_watch_only_balance, BitcoinUnits::SeparatorStyle::ALWAYS, m_privacy));
-            ui->labelImmature->setText(BitcoinUnits::formatWithPrivacy(unit, balances.immature_watch_only_balance, BitcoinUnits::SeparatorStyle::ALWAYS, m_privacy));
-            ui->labelTotal->setText(BitcoinUnits::formatWithPrivacy(unit, balances.watch_only_balance + balances.unconfirmed_watch_only_balance + balances.immature_watch_only_balance, BitcoinUnits::SeparatorStyle::ALWAYS, m_privacy));
-        } else {
-            ui->labelBalance->setText(BitcoinUnits::formatWithPrivacy(unit, balances.balance, BitcoinUnits::SeparatorStyle::ALWAYS, m_privacy));
-            ui->labelUnconfirmed->setText(BitcoinUnits::formatWithPrivacy(unit, balances.unconfirmed_balance, BitcoinUnits::SeparatorStyle::ALWAYS, m_privacy));
-            ui->labelImmature->setText(BitcoinUnits::formatWithPrivacy(unit, balances.immature_balance, BitcoinUnits::SeparatorStyle::ALWAYS, m_privacy));
-            ui->labelTotal->setText(BitcoinUnits::formatWithPrivacy(unit, balances.balance + balances.unconfirmed_balance + balances.immature_balance, BitcoinUnits::SeparatorStyle::ALWAYS, m_privacy));
-            ui->labelWatchAvailable->setText(BitcoinUnits::formatWithPrivacy(unit, balances.watch_only_balance, BitcoinUnits::SeparatorStyle::ALWAYS, m_privacy));
-            ui->labelWatchPending->setText(BitcoinUnits::formatWithPrivacy(unit, balances.unconfirmed_watch_only_balance, BitcoinUnits::SeparatorStyle::ALWAYS, m_privacy));
-            ui->labelWatchImmature->setText(BitcoinUnits::formatWithPrivacy(unit, balances.immature_watch_only_balance, BitcoinUnits::SeparatorStyle::ALWAYS, m_privacy));
-            ui->labelWatchTotal->setText(BitcoinUnits::formatWithPrivacy(unit, balances.watch_only_balance + balances.unconfirmed_watch_only_balance + balances.immature_watch_only_balance, BitcoinUnits::SeparatorStyle::ALWAYS, m_privacy));
-        }
-    } else {
-        ui->labelBalance->setText(BitcoinUnits::formatWithPrivacy(unit, balances.balance, BitcoinUnits::SeparatorStyle::ALWAYS, m_privacy));
-        ui->labelUnconfirmed->setText(BitcoinUnits::formatWithPrivacy(unit, balances.unconfirmed_balance, BitcoinUnits::SeparatorStyle::ALWAYS, m_privacy));
-        ui->labelImmature->setText(BitcoinUnits::formatWithPrivacy(unit, balances.immature_balance, BitcoinUnits::SeparatorStyle::ALWAYS, m_privacy));
-        ui->labelTotal->setText(BitcoinUnits::formatWithPrivacy(unit, balances.balance + balances.unconfirmed_balance + balances.immature_balance, BitcoinUnits::SeparatorStyle::ALWAYS, m_privacy));
-    }
+    BitcoinUnit unit = walletModel->getOptionsModel()->getDisplayUnit();
+    ui->labelBalance->setText(BitcoinUnits::formatWithPrivacy(unit, balances.balance, BitcoinUnits::SeparatorStyle::ALWAYS, m_privacy));
+    ui->labelUnconfirmed->setText(BitcoinUnits::formatWithPrivacy(unit, balances.unconfirmed_balance, BitcoinUnits::SeparatorStyle::ALWAYS, m_privacy));
+    ui->labelImmature->setText(BitcoinUnits::formatWithPrivacy(unit, balances.immature_balance, BitcoinUnits::SeparatorStyle::ALWAYS, m_privacy));
+    ui->labelTotal->setText(BitcoinUnits::formatWithPrivacy(unit, balances.balance + balances.unconfirmed_balance + balances.immature_balance, BitcoinUnits::SeparatorStyle::ALWAYS, m_privacy));
     // only show immature (newly mined) balance if it's non-zero, so as not to complicate things
     // for the non-mining users
     bool showImmature = balances.immature_balance != 0;
-    bool showWatchOnlyImmature = balances.immature_watch_only_balance != 0;
 
-    // for symmetry reasons also show immature label when the watch-only one is shown
-    ui->labelImmature->setVisible(showImmature || showWatchOnlyImmature);
-    ui->labelImmatureText->setVisible(showImmature || showWatchOnlyImmature);
-    ui->labelWatchImmature->setVisible(!walletModel->wallet().privateKeysDisabled() && showWatchOnlyImmature); // show watch-only immature balance
-}
-
-// show/hide watch-only labels
-void OverviewPage::updateWatchOnlyLabels(bool showWatchOnly)
-{
-    ui->labelSpendable->setVisible(showWatchOnly);      // show spendable label (only when watch-only is active)
-    ui->labelWatchonly->setVisible(showWatchOnly);      // show watch-only label
-    ui->lineWatchBalance->setVisible(showWatchOnly);    // show watch-only balance separator line
-    ui->labelWatchAvailable->setVisible(showWatchOnly); // show watch-only available balance
-    ui->labelWatchPending->setVisible(showWatchOnly);   // show watch-only pending balance
-    ui->labelWatchTotal->setVisible(showWatchOnly);     // show watch-only total balance
-
-    if (!showWatchOnly)
-        ui->labelWatchImmature->hide();
+    ui->labelImmature->setVisible(showImmature);
+    ui->labelImmatureText->setVisible(showImmature);
 }
 
 void OverviewPage::setClientModel(ClientModel *model)
@@ -254,8 +207,8 @@ void OverviewPage::setClientModel(ClientModel *model)
         connect(model, &ClientModel::alertsChanged, this, &OverviewPage::updateAlerts);
         updateAlerts(model->getStatusBarWarnings());
 
-        connect(model->getOptionsModel(), &OptionsModel::useEmbeddedMonospacedFontChanged, this, &OverviewPage::setMonospacedFont);
-        setMonospacedFont(model->getOptionsModel()->getUseEmbeddedMonospacedFont());
+        connect(model->getOptionsModel(), &OptionsModel::fontForMoneyChanged, this, &OverviewPage::setMonospacedFont);
+        setMonospacedFont(clientModel->getOptionsModel()->getFontForMoney());
     }
 }
 
@@ -267,7 +220,6 @@ void OverviewPage::setWalletModel(WalletModel *model)
         // Set up transaction list
         filter.reset(new TransactionFilterProxy());
         filter->setSourceModel(model->getTransactionTableModel());
-        filter->setLimit(NUM_ITEMS);
         filter->setDynamicSortFilter(true);
         filter->setSortRole(Qt::EditRole);
         filter->setShowInactive(false);
@@ -276,18 +228,15 @@ void OverviewPage::setWalletModel(WalletModel *model)
         ui->listTransactions->setModel(filter.get());
         ui->listTransactions->setModelColumn(TransactionTableModel::ToAddress);
 
+        connect(filter.get(), &TransactionFilterProxy::rowsInserted, this, &OverviewPage::LimitTransactionRows);
+        connect(filter.get(), &TransactionFilterProxy::rowsRemoved, this, &OverviewPage::LimitTransactionRows);
+        connect(filter.get(), &TransactionFilterProxy::rowsMoved, this, &OverviewPage::LimitTransactionRows);
+        LimitTransactionRows();
         // Keep up to date with wallet
-        interfaces::Wallet& wallet = model->wallet();
-        interfaces::WalletBalances balances = wallet.getBalances();
-        setBalance(balances);
+        setBalance(model->getCachedBalance());
         connect(model, &WalletModel::balanceChanged, this, &OverviewPage::setBalance);
 
         connect(model->getOptionsModel(), &OptionsModel::displayUnitChanged, this, &OverviewPage::updateDisplayUnit);
-
-        updateWatchOnlyLabels(wallet.haveWatchOnly() && !model->wallet().privateKeysDisabled());
-        connect(model, &WalletModel::notifyWatchonlyChanged, [this](bool showWatchOnly) {
-            updateWatchOnlyLabels(showWatchOnly && !walletModel->wallet().privateKeysDisabled());
-        });
     }
 
     // update the display unit, to not use the default ("BTC")
@@ -305,12 +254,22 @@ void OverviewPage::changeEvent(QEvent* e)
     QWidget::changeEvent(e);
 }
 
+// Only show most recent NUM_ITEMS rows
+void OverviewPage::LimitTransactionRows()
+{
+    if (filter && ui->listTransactions && ui->listTransactions->model() && filter.get() == ui->listTransactions->model()) {
+        for (int i = 0; i < filter->rowCount(); ++i) {
+            ui->listTransactions->setRowHidden(i, i >= NUM_ITEMS);
+        }
+    }
+}
+
 void OverviewPage::updateDisplayUnit()
 {
-    if(walletModel && walletModel->getOptionsModel())
-    {
-        if (m_balances.balance != -1) {
-            setBalance(m_balances);
+    if (walletModel && walletModel->getOptionsModel()) {
+        const auto& balances = walletModel->getCachedBalance();
+        if (balances.balance != -1) {
+            setBalance(balances);
         }
 
         // Update txdelegate->unit with the current unit
@@ -332,16 +291,10 @@ void OverviewPage::showOutOfSyncWarning(bool fShow)
     ui->labelTransactionsStatus->setVisible(fShow);
 }
 
-void OverviewPage::setMonospacedFont(bool use_embedded_font)
+void OverviewPage::setMonospacedFont(const QFont& f)
 {
-    QFont f = GUIUtil::fixedPitchFont(use_embedded_font);
-    f.setWeight(QFont::Bold);
     ui->labelBalance->setFont(f);
     ui->labelUnconfirmed->setFont(f);
     ui->labelImmature->setFont(f);
     ui->labelTotal->setFont(f);
-    ui->labelWatchAvailable->setFont(f);
-    ui->labelWatchPending->setFont(f);
-    ui->labelWatchImmature->setFont(f);
-    ui->labelWatchTotal->setFont(f);
 }

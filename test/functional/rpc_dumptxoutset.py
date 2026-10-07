@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Copyright (c) 2019-2021 The Bitcoin Core developers
+# Copyright (c) 2019-present The Bitcoin Core developers
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 """Test the generation of UTXO snapshots using `dumptxoutset`.
@@ -7,16 +7,47 @@
 
 from test_framework.blocktools import COINBASE_MATURITY
 from test_framework.test_framework import BitcoinTestFramework
-from test_framework.util import assert_equal, assert_raises_rpc_error
-
-import hashlib
-from pathlib import Path
+from test_framework.util import (
+    assert_equal,
+    assert_raises_rpc_error,
+    sha256sum_file,
+)
 
 
 class DumptxoutsetTest(BitcoinTestFramework):
     def set_test_params(self):
         self.setup_clean_chain = True
         self.num_nodes = 1
+
+    def test_dumptxoutset_with_fork(self):
+        node = self.nodes[0]
+        tip = node.getbestblockhash()
+        target_height = node.getblockcount() - 10
+        target_hash = node.getblockhash(target_height)
+
+        # Create a fork of two blocks at the target height
+        invalid_block = node.getblockhash(target_height + 1)
+        node.invalidateblock(invalid_block)
+        # Reset mocktime to not regenerate the same blockhash
+        node.setmocktime(0)
+        self.generate(node, 2)
+
+        # Move back on to actual main chain
+        node.reconsiderblock(invalid_block)
+        self.wait_until(lambda: node.getbestblockhash() == tip)
+
+        # Use dumptxoutset at the forked height
+        out = node.dumptxoutset("txoutset_fork.dat", "rollback", {"rollback": target_height})
+
+        # Verify the snapshot was created at the target height and not the fork tip
+        assert_equal(out['base_height'], target_height)
+        assert_equal(out['base_hash'], target_hash)
+
+        # Cover the same case as above with an in-memory database
+        out_mem = node.dumptxoutset("txoutset_fork_mem.dat", "rollback", {"rollback": target_height, "in_memory": True})
+        assert_equal(out_mem['base_height'], target_height)
+        assert_equal(out_mem['base_hash'], target_hash)
+
 
     def run_test(self):
         """Test a trivial usage of the dumptxoutset RPC command."""
@@ -26,8 +57,8 @@ class DumptxoutsetTest(BitcoinTestFramework):
         self.generate(node, COINBASE_MATURITY)
 
         FILENAME = 'txoutset.dat'
-        out = node.dumptxoutset(FILENAME)
-        expected_path = Path(node.datadir) / self.chain / FILENAME
+        out = node.dumptxoutset(FILENAME, "latest")
+        expected_path = node.chain_path / FILENAME
 
         assert expected_path.is_file()
 
@@ -37,21 +68,31 @@ class DumptxoutsetTest(BitcoinTestFramework):
         # Blockhash should be deterministic based on mocked time.
         assert_equal(
             out['base_hash'],
-            '6fd417acba2a8738b06fee43330c50d58e6a725046c3d843c8dd7e51d46d1ed6')
+            '220aee93f0f5409631f35488898258f0930952bd620063cb4d7d87f7c28a8f50')
 
-        with open(str(expected_path), 'rb') as f:
-            digest = hashlib.sha256(f.read()).hexdigest()
-            # UTXO snapshot hash should be deterministic based on mocked time.
-            assert_equal(
-                digest, '7ae82c986fa5445678d2a21453bb1c86d39e47af13da137640c2b1cf8093691c')
+        # UTXO snapshot hash should be deterministic based on mocked time.
+        assert_equal(
+            sha256sum_file(str(expected_path)).hex(),
+            'e8c59b1bc1f19061c67eb7a392f4ea17eea83af58646ea2909e270546699c36c')
 
         assert_equal(
-            out['txoutset_hash'], 'd4b614f476b99a6e569973bf1c0120d88b1a168076f8ce25691fb41dd1cef149')
+            out['txoutset_hash'], '771d773b5c27b6f35f598ce764652a2cf28fbc268341eb1827844e416c629c7d')
         assert_equal(out['nchaintx'], 101)
 
-        # Specifying a path to an existing file will fail.
+        # Specifying a path to an existing or invalid file will fail.
         assert_raises_rpc_error(
-            -8, '{} already exists'.format(FILENAME),  node.dumptxoutset, FILENAME)
+            -8, '{} already exists'.format(FILENAME),  node.dumptxoutset, FILENAME, "latest")
+        invalid_path = node.datadir_path / "invalid" / "path"
+        assert_raises_rpc_error(
+            -8, "Couldn't open file {}.incomplete for writing".format(invalid_path), node.dumptxoutset, invalid_path, "latest")
+
+        self.log.info("Test that dumptxoutset with unknown dump type fails")
+        assert_raises_rpc_error(
+            -8, 'Invalid snapshot type "bogus" specified. Please specify "rollback" or "latest"', node.dumptxoutset, 'utxos.dat', "bogus")
+
+        self.log.info("Testing dumptxoutset with chain fork at target height")
+        self.test_dumptxoutset_with_fork()
+
 
 if __name__ == '__main__':
-    DumptxoutsetTest().main()
+    DumptxoutsetTest(__file__).main()

@@ -1,19 +1,38 @@
-// Copyright (c) 2019 The Bitcoin Core developers
+// Copyright (c) 2019-present The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-#include <random.h>
 #include <util/hasher.h>
 
-#include <limits>
+#include <crypto/siphash.h>
+#include <random.h>
 
-SaltedTxidHasher::SaltedTxidHasher() : k0(GetRand(std::numeric_limits<uint64_t>::max())), k1(GetRand(std::numeric_limits<uint64_t>::max())) {}
+SaltedUint256Hasher::SaltedUint256Hasher() : m_hasher{
+    FastRandomContext().rand64(),
+    FastRandomContext().rand64()}
+{}
 
-SaltedOutpointHasher::SaltedOutpointHasher() : k0(GetRand(std::numeric_limits<uint64_t>::max())), k1(GetRand(std::numeric_limits<uint64_t>::max())) {}
+SaltedTxidHasher::SaltedTxidHasher() : m_hasher{
+    FastRandomContext().rand64(),
+    FastRandomContext().rand64()}
+{}
 
-SaltedSipHasher::SaltedSipHasher() : m_k0(GetRand(std::numeric_limits<uint64_t>::max())), m_k1(GetRand(std::numeric_limits<uint64_t>::max())) {}
+SaltedWtxidHasher::SaltedWtxidHasher() : m_hasher{
+    FastRandomContext().rand64(),
+    FastRandomContext().rand64()}
+{}
 
-size_t SaltedSipHasher::operator()(const Span<const unsigned char>& script) const
+SaltedOutpointHasher::SaltedOutpointHasher() : m_hasher{
+    FastRandomContext().rand64(),
+    FastRandomContext().rand64()}
+{}
+
+SaltedSipHasher::SaltedSipHasher() :
+    m_k0{FastRandomContext().rand64()},
+    m_k1{FastRandomContext().rand64()}
+{}
+
+size_t SaltedSipHasher::operator()(const std::span<const unsigned char>& script) const
 {
-    return CSipHasher(m_k0, m_k1).Write(script.data(), script.size()).Finalize();
+    return CSipHasher(m_k0, m_k1).Write(script).Finalize();
 }

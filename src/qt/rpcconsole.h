@@ -1,10 +1,13 @@
-// Copyright (c) 2011-2021 The Bitcoin Core developers
+// Copyright (c) 2011-present The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #ifndef BITCOIN_QT_RPCCONSOLE_H
 #define BITCOIN_QT_RPCCONSOLE_H
 
+#include <bitcoin-build-config.h> // IWYU pragma: keep
+
+#include <qt/clientmodel.h>
 #include <qt/guiutil.h>
 #include <qt/peertablemodel.h>
 
@@ -12,12 +15,14 @@
 
 #include <QByteArray>
 #include <QCompleter>
+#include <QMimeData>
+#include <QTextDocumentFragment>
+#include <QTextEdit>
 #include <QThread>
 #include <QWidget>
 
-class ClientModel;
 class PlatformStyle;
-class RPCTimerInterface;
+class RPCExecutor;
 class WalletModel;
 
 namespace interfaces {
@@ -43,14 +48,17 @@ public:
     explicit RPCConsole(interfaces::Node& node, const PlatformStyle *platformStyle, QWidget *parent);
     ~RPCConsole();
 
-    static bool RPCParseCommandLine(interfaces::Node* node, std::string &strResult, const std::string &strCommand, bool fExecute, std::string * const pstrFilteredOut = nullptr, const WalletModel* wallet_model = nullptr);
-    static bool RPCExecuteCommandLine(interfaces::Node& node, std::string &strResult, const std::string &strCommand, std::string * const pstrFilteredOut = nullptr, const WalletModel* wallet_model = nullptr) {
-        return RPCParseCommandLine(&node, strResult, strCommand, true, pstrFilteredOut, wallet_model);
+    static bool RPCParseCommandLine(interfaces::Node* node, std::string& strResult, const std::string& strCommand, bool fExecute, std::string* pstrFilteredOut = nullptr, const QString& wallet_name = {});
+    static bool RPCExecuteCommandLine(interfaces::Node& node, std::string &strResult, const std::string &strCommand, std::string * const pstrFilteredOut = nullptr, const QString& wallet_name = {}) {
+        return RPCParseCommandLine(&node, strResult, strCommand, true, pstrFilteredOut, wallet_name);
     }
 
     void setClientModel(ClientModel *model = nullptr, int bestblock_height = 0, int64_t bestblock_date = 0, double verification_progress = 0.0);
-    void addWallet(WalletModel * const walletModel);
-    void removeWallet(WalletModel* const walletModel);
+
+#ifdef ENABLE_WALLET
+    void addWallet(WalletModel* walletModel);
+    void removeWallet(WalletModel* walletModel);
+#endif // ENABLE_WALLET
 
     enum MessageClass {
         MC_ERROR,
@@ -113,9 +121,9 @@ public Q_SLOTS:
     /** Set network state shown in the UI */
     void setNetworkActive(bool networkActive);
     /** Set number of blocks and last block date shown in the UI */
-    void setNumBlocks(int count, const QDateTime& blockDate, double nVerificationProgress, bool headers);
+    void setNumBlocks(int count, const QDateTime& blockDate, double nVerificationProgress, SyncType synctype);
     /** Set size (number of transactions and memory usage) of the mempool in the UI */
-    void setMempoolSize(long numberOfTxs, size_t dynUsage);
+    void setMempoolSize(long numberOfTxs, size_t dynUsage, size_t maxUsage);
     /** Go forward or back in history */
     void browseHistory(int offset);
     /** Scroll console view to end */
@@ -128,10 +136,10 @@ public Q_SLOTS:
     void unbanSelectedNode();
     /** set which tab has the focus (is visible) */
     void setTabFocus(enum TabTypes tabType);
-
-Q_SIGNALS:
-    // For RPC command executor
-    void cmdRequest(const QString &command, const WalletModel* wallet_model);
+#ifdef ENABLE_WALLET
+    /** Set the current (ie - active) wallet */
+    void setCurrentWallet(WalletModel* wallet_model);
+#endif // ENABLE_WALLET
 
 private:
     struct TranslatedStrings {
@@ -160,12 +168,12 @@ private:
     QString cmdBeforeBrowsing;
     QList<NodeId> cachedNodeids;
     const PlatformStyle* const platformStyle;
-    RPCTimerInterface *rpcTimerInterface = nullptr;
     QMenu *peersTableContextMenu = nullptr;
     QMenu *banTableContextMenu = nullptr;
     int consoleFontSize = 0;
     QCompleter *autoCompleter = nullptr;
     QThread thread;
+    RPCExecutor* m_executor{nullptr};
     WalletModel* m_last_wallet_model{nullptr};
     bool m_is_executing{false};
     QByteArray m_peer_widget_header_state;
@@ -174,14 +182,37 @@ private:
     /** Update UI with latest network info from model. */
     void updateNetworkState();
 
-    /** Helper for the output of a time duration field. Inputs are UNIX epoch times. */
+    /// Format the duration between now and event as a string.
+    QString TimeDurationField(NodeClock::time_point now, NodeClock::time_point event) const
+    {
+        return event > NodeClock::epoch ? GUIUtil::formatDurationStr(now - event) : tr("Never");
+    }
+    /// DEPRECATED: Helper for the output of a time duration field. Inputs are UNIX epoch times.
     QString TimeDurationField(std::chrono::seconds time_now, std::chrono::seconds time_at_event) const
     {
         return time_at_event.count() ? GUIUtil::formatDurationStr(time_now - time_at_event) : tr("Never");
     }
 
+    void updateWindowTitle();
+
 private Q_SLOTS:
     void updateAlerts(const QString& warnings);
+};
+
+/**
+ * A version of QTextEdit that only populates plaintext mime data from a
+ * selection, this avoids some bad behavior in QT's HTML->Markdown conversion.
+ */
+class PlainCopyTextEdit : public QTextEdit {
+    Q_OBJECT
+public:
+    using QTextEdit::QTextEdit;
+protected:
+    QMimeData* createMimeDataFromSelection() const override {
+        auto md = new QMimeData();
+        md->setText(textCursor().selection().toPlainText());
+        return md;
+    }
 };
 
 #endif // BITCOIN_QT_RPCCONSOLE_H

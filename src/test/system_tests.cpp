@@ -1,106 +1,125 @@
-// Copyright (c) 2019-2021 The Bitcoin Core developers
+// Copyright (c) 2019-present The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 //
-#include <test/util/setup_common.h>
-#include <util/system.h>
-#include <univalue.h>
 
-#ifdef ENABLE_EXTERNAL_SIGNER
-#if defined(WIN32) && !defined(__kernel_entry)
-// A workaround for boost 1.71 incompatibility with mingw-w64 compiler.
-// For details see https://github.com/bitcoin/bitcoin/pull/22348.
-#define __kernel_entry
-#endif
-#include <boost/process.hpp>
-#endif // ENABLE_EXTERNAL_SIGNER
+#include <common/run_command.h>
+#include <test/util/common.h>
+#include <test/util/setup_common.h>
+#include <univalue.h>
+#include <util/string.h>
+
+#include <cstdlib>
+#include <iostream>
+#include <string_view>
+
+#include <util/subprocess.h>
 
 #include <boost/test/unit_test.hpp>
 
+#include <string>
+
+namespace {
+// When set in the environment, test_bitcoin acts as a mock subprocess for the
+// run_command test below instead of running unit tests.
+constexpr const char* MOCK_PROCESS_ENV = "BITCOIN_TEST_MOCK_PROCESS";
+
+const bool g_maybe_run_mock_dispatcher_before_main{[]() {
+    const char* name = std::getenv(MOCK_PROCESS_ENV);
+    if (!name) return false;
+    const std::string_view n{name};
+    if (n == "valid_json") {
+        std::cout << R"({"success": true})" << std::endl;
+        std::_Exit(EXIT_SUCCESS);
+    }
+    if (n == "nonzeroexit_nooutput") {
+        std::_Exit(EXIT_FAILURE);
+    }
+    if (n == "nonzeroexit_stderroutput") {
+        std::cerr << "err" << std::endl;
+        std::_Exit(EXIT_FAILURE);
+    }
+    if (n == "invalid_json") {
+        std::cout << "{" << std::endl;
+        std::_Exit(EXIT_SUCCESS);
+    }
+    if (n == "pass_stdin_to_stdout") {
+        std::string s;
+        std::getline(std::cin, s);
+        std::cout << s << std::endl;
+        std::_Exit(EXIT_SUCCESS);
+    }
+    std::cerr << "Unknown mock process: " << n << std::endl;
+    std::_Exit(EXIT_FAILURE);
+}()};
+} // namespace
+
 BOOST_FIXTURE_TEST_SUITE(system_tests, BasicTestingSetup)
 
-// At least one test is required (in case ENABLE_EXTERNAL_SIGNER is not defined).
-// Workaround for https://github.com/bitcoin/bitcoin/issues/19128
-BOOST_AUTO_TEST_CASE(dummy)
+static std::vector<std::string> mock_executable(const std::string& name)
 {
-    BOOST_CHECK(true);
+#if defined(WIN32)
+    _putenv_s(MOCK_PROCESS_ENV, name.c_str());
+#else
+    setenv(MOCK_PROCESS_ENV, name.c_str(), /*overwrite=*/1);
+#endif
+    return {boost::unit_test::framework::master_test_suite().argv[0]};
 }
-
-#ifdef ENABLE_EXTERNAL_SIGNER
 
 BOOST_AUTO_TEST_CASE(run_command)
 {
     {
-        const UniValue result = RunCommandParseJSON("");
+        const UniValue result = RunCommandParseJSON({});
         BOOST_CHECK(result.isNull());
     }
     {
-#ifdef WIN32
-        const UniValue result = RunCommandParseJSON("cmd.exe /c echo {\"success\": true}");
-#else
-        const UniValue result = RunCommandParseJSON("echo \"{\"success\": true}\"");
-#endif
+        const UniValue result = RunCommandParseJSON(mock_executable("valid_json"));
         BOOST_CHECK(result.isObject());
-        const UniValue& success = find_value(result, "success");
+        const UniValue& success = result.find_value("success");
         BOOST_CHECK(!success.isNull());
-        BOOST_CHECK_EQUAL(success.getBool(), true);
+        BOOST_CHECK_EQUAL(success.get_bool(), true);
     }
     {
-        // An invalid command is handled by Boost
+        // An invalid command is handled by cpp-subprocess
 #ifdef WIN32
-        const std::string expected{"The system cannot find the file specified."};
+        const std::string expected{"CreateProcess failed: "};
 #else
-        const std::string expected{"No such file or directory"};
+        const std::string expected{"execve failed: "};
 #endif
-        BOOST_CHECK_EXCEPTION(RunCommandParseJSON("invalid_command"), boost::process::process_error, [&](const boost::process::process_error& e) {
-            const std::string what(e.what());
-            BOOST_CHECK(what.find("RunCommandParseJSON error:") == std::string::npos);
-            BOOST_CHECK(what.find(expected) != std::string::npos);
-            return true;
-        });
+        BOOST_CHECK_EXCEPTION(RunCommandParseJSON({"invalid_command"}), subprocess::CalledProcessError, HasReason(expected));
     }
     {
         // Return non-zero exit code, no output to stderr
-#ifdef WIN32
-        const std::string command{"cmd.exe /c call"};
-#else
-        const std::string command{"false"};
-#endif
+        const std::vector<std::string> command = mock_executable("nonzeroexit_nooutput");
         BOOST_CHECK_EXCEPTION(RunCommandParseJSON(command), std::runtime_error, [&](const std::runtime_error& e) {
-            BOOST_CHECK(std::string(e.what()).find(strprintf("RunCommandParseJSON error: process(%s) returned 1: \n", command)) != std::string::npos);
+            const std::string what{e.what()};
+            BOOST_CHECK(what.find(strprintf("RunCommandParseJSON error: process(%s) returned %d: \n", util::Join(command, " "), EXIT_FAILURE)) != std::string::npos);
             return true;
         });
     }
     {
         // Return non-zero exit code, with error message for stderr
-#ifdef WIN32
-        const std::string command{"cmd.exe /c dir nosuchfile"};
-        const std::string expected{"File Not Found"};
-#else
-        const std::string command{"ls nosuchfile"};
-        const std::string expected{"No such file or directory"};
-#endif
+        const std::vector<std::string> command = mock_executable("nonzeroexit_stderroutput");
+        const std::string expected{"err"};
         BOOST_CHECK_EXCEPTION(RunCommandParseJSON(command), std::runtime_error, [&](const std::runtime_error& e) {
             const std::string what(e.what());
-            BOOST_CHECK(what.find(strprintf("RunCommandParseJSON error: process(%s) returned", command)) != std::string::npos);
+            BOOST_CHECK(what.find(strprintf("RunCommandParseJSON error: process(%s) returned %s: %s", util::Join(command, " "), EXIT_FAILURE, "err")) != std::string::npos);
             BOOST_CHECK(what.find(expected) != std::string::npos);
             return true;
         });
     }
     {
-        BOOST_REQUIRE_THROW(RunCommandParseJSON("echo \"{\""), std::runtime_error); // Unable to parse JSON
+        // Unable to parse JSON
+        BOOST_CHECK_EXCEPTION(RunCommandParseJSON(mock_executable("invalid_json")), std::runtime_error, HasReason("Unable to parse JSON: {"));
     }
-    // Test std::in, except for Windows
-#ifndef WIN32
     {
-        const UniValue result = RunCommandParseJSON("cat", "{\"success\": true}");
+        // Test stdin
+        const UniValue result = RunCommandParseJSON(mock_executable("pass_stdin_to_stdout"), "{\"success\": true}");
         BOOST_CHECK(result.isObject());
-        const UniValue& success = find_value(result, "success");
+        const UniValue& success = result.find_value("success");
         BOOST_CHECK(!success.isNull());
-        BOOST_CHECK_EQUAL(success.getBool(), true);
+        BOOST_CHECK_EQUAL(success.get_bool(), true);
     }
-#endif
 }
-#endif // ENABLE_EXTERNAL_SIGNER
 
 BOOST_AUTO_TEST_SUITE_END()

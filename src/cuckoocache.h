@@ -6,12 +6,14 @@
 #define BITCOIN_CUCKOOCACHE_H
 
 #include <util/fastrange.h>
+#include <util/overflow.h>
 
-#include <algorithm> // std::find
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <utility>
 #include <vector>
@@ -62,7 +64,7 @@ public:
     explicit bit_packed_atomic_flags(uint32_t size)
     {
         // pad out the size if needed
-        size = (size + 7) / 8;
+        size = CeilDiv(size, 8u);
         mem.reset(new std::atomic<uint8_t>[size]);
         for (uint32_t i = 0; i < size; ++i)
             mem[i].store(0xFF);
@@ -164,7 +166,7 @@ private:
     std::vector<Element> table;
 
     /** size stores the total available slots in the hash table */
-    uint32_t size;
+    uint32_t size{0};
 
     /** The bit_packed_atomic_flags array is marked mutable because we want
      * garbage collection to be allowed to occur from const methods */
@@ -181,7 +183,7 @@ private:
      * decremented on insert and reset to the new number of inserts which would
      * cause the epoch to reach epoch_size when it reaches zero.
      */
-    uint32_t epoch_heuristic_counter;
+    uint32_t epoch_heuristic_counter{0};
 
     /** epoch_size is set to be the number of elements supposed to be in a
      * epoch. When the number of non-erased elements in an epoch
@@ -191,12 +193,12 @@ private:
      * one "dead" which has been erased, one "dying" which has been marked to be
      * erased next, and one "living" which new inserts add to.
      */
-    uint32_t epoch_size;
+    uint32_t epoch_size{0};
 
     /** depth_limit determines how many elements insert should try to replace.
      * Should be set to log2(n).
      */
-    uint8_t depth_limit;
+    uint8_t depth_limit{0};
 
     /** hash_function is a const instance of the hash function. It cannot be
      * static or initialized at call time as it may have internal state (such as
@@ -320,15 +322,14 @@ public:
     /** You must always construct a cache with some elements via a subsequent
      * call to setup or setup_bytes, otherwise operations may segfault.
      */
-    cache() : table(), size(), collection_flags(0), epoch_flags(),
-    epoch_heuristic_counter(), epoch_size(), depth_limit(0), hash_function()
+    cache() : table(), collection_flags(0), epoch_flags(), hash_function()
     {
     }
 
     /** setup initializes the container to store no more than new_size
-     * elements.
+     * elements and no less than 2 elements.
      *
-     * setup should only be called once.
+     * setup should only be called once. TestOnlyReset() is the exception.
      *
      * @param new_size the desired number of elements to store
      * @returns the maximum number of elements storable
@@ -336,13 +337,13 @@ public:
     uint32_t setup(uint32_t new_size)
     {
         // depth_limit must be at least one otherwise errors can occur.
-        depth_limit = static_cast<uint8_t>(std::log2(static_cast<float>(std::max((uint32_t)2, new_size))));
         size = std::max<uint32_t>(2, new_size);
+        depth_limit = static_cast<uint8_t>(std::log2(static_cast<float>(size)));
         table.resize(size);
         collection_flags.setup(size);
         epoch_flags.resize(size);
         // Set to 45% as described above
-        epoch_size = std::max((uint32_t)1, (45 * size) / 100);
+        epoch_size = std::max(uint32_t{1}, (45 * size) / 100);
         // Initially set to wait for a whole epoch
         epoch_heuristic_counter = epoch_size;
         return size;
@@ -357,12 +358,20 @@ public:
      *
      * @param bytes the approximate number of bytes to use for this data
      * structure
-     * @returns the maximum number of elements storable (see setup()
-     * documentation for more detail)
+     * @returns A pair of the maximum number of elements storable (see setup()
+     * documentation for more detail) and the approximate total size of these
+     * elements in bytes.
      */
-    uint32_t setup_bytes(size_t bytes)
+    std::pair<uint32_t, size_t> setup_bytes(size_t bytes)
     {
-        return setup(bytes/sizeof(Element));
+        uint32_t requested_num_elems(std::min<size_t>(
+            bytes / sizeof(Element),
+            std::numeric_limits<uint32_t>::max()));
+
+        auto num_elems = setup(requested_num_elems);
+
+        size_t approx_size_bytes = num_elems * sizeof(Element);
+        return std::make_pair(num_elems, approx_size_bytes);
     }
 
     /** insert loops at most depth_limit times trying to insert a hash
@@ -473,6 +482,14 @@ public:
                 return true;
             }
         return false;
+    }
+
+    /** Empty the cache and re-run setup(). */
+    void TestOnlyReset()
+    {
+        table.clear();
+        epoch_flags.clear();
+        setup(0);
     }
 };
 } // namespace CuckooCache

@@ -1,37 +1,46 @@
-// Copyright (c) 2017-2021 The Bitcoin Core developers
+// Copyright (c) 2017-present The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
+#include <addresstype.h>
 #include <blockfilter.h>
-#include <chainparams.h>
-#include <consensus/validation.h>
+#include <chain.h>
 #include <index/blockfilterindex.h>
-#include <node/miner.h>
-#include <pow.h>
-#include <script/standard.h>
+#include <interfaces/chain.h>
+#include <key.h>
+#include <node/blockstorage.h>
+#include <primitives/block.h>
+#include <script/script.h>
+#include <sync.h>
 #include <test/util/blockfilter.h>
+#include <test/util/common.h>
+#include <test/util/mining.h>
 #include <test/util/setup_common.h>
-#include <util/time.h>
+#include <uint256.h>
+#include <util/check.h>
 #include <validation.h>
 
 #include <boost/test/unit_test.hpp>
 
-using node::BlockAssembler;
-using node::CBlockTemplate;
-using node::IncrementExtraNonce;
+#include <compare>
+#include <cstddef>
+#include <cstdint>
+#include <functional>
+#include <memory>
+#include <span>
+#include <string>
+#include <utility>
+#include <vector>
+
+using node::BlockManager;
 
 BOOST_AUTO_TEST_SUITE(blockfilter_index_tests)
 
-struct BuildChainTestingSetup : public TestChain100Setup {
-    CBlock CreateBlock(const CBlockIndex* prev, const std::vector<CMutableTransaction>& txns, const CScript& scriptPubKey);
-    bool BuildChain(const CBlockIndex* pindex, const CScript& coinbase_script_pub_key, size_t length, std::vector<std::shared_ptr<CBlock>>& chain);
-};
-
 static bool CheckFilterLookups(BlockFilterIndex& filter_index, const CBlockIndex* block_index,
-                               uint256& last_header)
+                               uint256& last_header, const BlockManager& blockman)
 {
     BlockFilter expected_filter;
-    if (!ComputeFilter(filter_index.GetFilterType(), block_index, expected_filter)) {
+    if (!ComputeFilter(filter_index.GetFilterType(), *block_index, expected_filter, blockman)) {
         BOOST_ERROR("ComputeFilter failed on block " << block_index->nHeight);
         return false;
     }
@@ -61,54 +70,10 @@ static bool CheckFilterLookups(BlockFilterIndex& filter_index, const CBlockIndex
     return true;
 }
 
-CBlock BuildChainTestingSetup::CreateBlock(const CBlockIndex* prev,
-    const std::vector<CMutableTransaction>& txns,
-    const CScript& scriptPubKey)
+BOOST_FIXTURE_TEST_CASE(blockfilter_index_initial_sync, TestChain100Setup)
 {
-    const CChainParams& chainparams = Params();
-    std::unique_ptr<CBlockTemplate> pblocktemplate = BlockAssembler(m_node.chainman->ActiveChainstate(), *m_node.mempool, chainparams).CreateNewBlock(scriptPubKey);
-    CBlock& block = pblocktemplate->block;
-    block.hashPrevBlock = prev->GetBlockHash();
-    block.nTime = prev->nTime + 1;
-
-    // Replace mempool-selected txns with just coinbase plus passed-in txns:
-    block.vtx.resize(1);
-    for (const CMutableTransaction& tx : txns) {
-        block.vtx.push_back(MakeTransactionRef(tx));
-    }
-    // IncrementExtraNonce creates a valid coinbase and merkleRoot
-    unsigned int extraNonce = 0;
-    IncrementExtraNonce(&block, prev, extraNonce);
-
-    while (!CheckProofOfWork(block.GetHash(), block.nBits, chainparams.GetConsensus())) ++block.nNonce;
-
-    return block;
-}
-
-bool BuildChainTestingSetup::BuildChain(const CBlockIndex* pindex,
-    const CScript& coinbase_script_pub_key,
-    size_t length,
-    std::vector<std::shared_ptr<CBlock>>& chain)
-{
-    std::vector<CMutableTransaction> no_txns;
-
-    chain.resize(length);
-    for (auto& block : chain) {
-        block = std::make_shared<CBlock>(CreateBlock(pindex, no_txns, coinbase_script_pub_key));
-        CBlockHeader header = block->GetBlockHeader();
-
-        BlockValidationState state;
-        if (!Assert(m_node.chainman)->ProcessNewBlockHeaders({header}, state, Params(), &pindex)) {
-            return false;
-        }
-    }
-
-    return true;
-}
-
-BOOST_FIXTURE_TEST_CASE(blockfilter_index_initial_sync, BuildChainTestingSetup)
-{
-    BlockFilterIndex filter_index(BlockFilterType::BASIC, 1 << 20, true);
+    BlockFilterIndex filter_index(interfaces::MakeChain(m_node), BlockFilterType::BASIC, 1_MiB, true);
+    BOOST_REQUIRE(filter_index.Init());
 
     uint256 last_header;
 
@@ -123,7 +88,7 @@ BOOST_FIXTURE_TEST_CASE(blockfilter_index_initial_sync, BuildChainTestingSetup)
 
         for (const CBlockIndex* block_index = m_node.chainman->ActiveChain().Genesis();
              block_index != nullptr;
-             block_index = m_node.chainman->ActiveChain().Next(block_index)) {
+             block_index = m_node.chainman->ActiveChain().Next(*block_index)) {
             BOOST_CHECK(!filter_index.LookupFilter(block_index, filter));
             BOOST_CHECK(!filter_index.LookupFilterHeader(block_index, filter_header));
             BOOST_CHECK(!filter_index.LookupFilterRange(block_index->nHeight, block_index, filters));
@@ -135,15 +100,7 @@ BOOST_FIXTURE_TEST_CASE(blockfilter_index_initial_sync, BuildChainTestingSetup)
     // BlockUntilSyncedToCurrentChain should return false before index is started.
     BOOST_CHECK(!filter_index.BlockUntilSyncedToCurrentChain());
 
-    BOOST_REQUIRE(filter_index.Start(m_node.chainman->ActiveChainstate()));
-
-    // Allow filter index to catch up with the block index.
-    constexpr int64_t timeout_ms = 10 * 1000;
-    int64_t time_start = GetTimeMillis();
-    while (!filter_index.BlockUntilSyncedToCurrentChain()) {
-        BOOST_REQUIRE(time_start + timeout_ms > GetTimeMillis());
-        UninterruptibleSleep(std::chrono::milliseconds{100});
-    }
+    filter_index.Sync();
 
     // Check that filter index has all blocks that were in the chain before it started.
     {
@@ -151,8 +108,8 @@ BOOST_FIXTURE_TEST_CASE(blockfilter_index_initial_sync, BuildChainTestingSetup)
         const CBlockIndex* block_index;
         for (block_index = m_node.chainman->ActiveChain().Genesis();
              block_index != nullptr;
-             block_index = m_node.chainman->ActiveChain().Next(block_index)) {
-            CheckFilterLookups(filter_index, block_index, last_header);
+             block_index = m_node.chainman->ActiveChain().Next(*block_index)) {
+            CheckFilterLookups(filter_index, block_index, last_header, m_node.chainman->m_blockman);
         }
     }
 
@@ -162,20 +119,19 @@ BOOST_FIXTURE_TEST_CASE(blockfilter_index_initial_sync, BuildChainTestingSetup)
         LOCK(cs_main);
         tip = m_node.chainman->ActiveChain().Tip();
     }
-    CKey coinbase_key_A, coinbase_key_B;
-    coinbase_key_A.MakeNewKey(true);
-    coinbase_key_B.MakeNewKey(true);
+    CKey coinbase_key_A = GenerateRandomKey();
+    CKey coinbase_key_B = GenerateRandomKey();
     CScript coinbase_script_pub_key_A = GetScriptForDestination(PKHash(coinbase_key_A.GetPubKey()));
     CScript coinbase_script_pub_key_B = GetScriptForDestination(PKHash(coinbase_key_B.GetPubKey()));
     std::vector<std::shared_ptr<CBlock>> chainA, chainB;
-    BOOST_REQUIRE(BuildChain(tip, coinbase_script_pub_key_A, 10, chainA));
-    BOOST_REQUIRE(BuildChain(tip, coinbase_script_pub_key_B, 10, chainB));
+    BOOST_REQUIRE(BuildChain(m_node, tip, coinbase_script_pub_key_A, 10, chainA));
+    BOOST_REQUIRE(BuildChain(m_node, tip, coinbase_script_pub_key_B, 10, chainB));
 
     // Check that new blocks on chain A get indexed.
     uint256 chainA_last_header = last_header;
     for (size_t i = 0; i < 2; i++) {
         const auto& block = chainA[i];
-        BOOST_REQUIRE(Assert(m_node.chainman)->ProcessNewBlock(Params(), block, true, nullptr));
+        BOOST_REQUIRE(Assert(m_node.chainman)->ProcessNewBlock(block, true, true, nullptr));
     }
     for (size_t i = 0; i < 2; i++) {
         const auto& block = chainA[i];
@@ -186,14 +142,14 @@ BOOST_FIXTURE_TEST_CASE(blockfilter_index_initial_sync, BuildChainTestingSetup)
         }
 
         BOOST_CHECK(filter_index.BlockUntilSyncedToCurrentChain());
-        CheckFilterLookups(filter_index, block_index, chainA_last_header);
+        CheckFilterLookups(filter_index, block_index, chainA_last_header, m_node.chainman->m_blockman);
     }
 
     // Reorg to chain B.
     uint256 chainB_last_header = last_header;
     for (size_t i = 0; i < 3; i++) {
         const auto& block = chainB[i];
-        BOOST_REQUIRE(Assert(m_node.chainman)->ProcessNewBlock(Params(), block, true, nullptr));
+        BOOST_REQUIRE(Assert(m_node.chainman)->ProcessNewBlock(block, true, true, nullptr));
     }
     for (size_t i = 0; i < 3; i++) {
         const auto& block = chainB[i];
@@ -204,7 +160,7 @@ BOOST_FIXTURE_TEST_CASE(blockfilter_index_initial_sync, BuildChainTestingSetup)
         }
 
         BOOST_CHECK(filter_index.BlockUntilSyncedToCurrentChain());
-        CheckFilterLookups(filter_index, block_index, chainB_last_header);
+        CheckFilterLookups(filter_index, block_index, chainB_last_header, m_node.chainman->m_blockman);
     }
 
     // Check that filters for stale blocks on A can be retrieved.
@@ -218,13 +174,13 @@ BOOST_FIXTURE_TEST_CASE(blockfilter_index_initial_sync, BuildChainTestingSetup)
         }
 
         BOOST_CHECK(filter_index.BlockUntilSyncedToCurrentChain());
-        CheckFilterLookups(filter_index, block_index, chainA_last_header);
+        CheckFilterLookups(filter_index, block_index, chainA_last_header, m_node.chainman->m_blockman);
     }
 
     // Reorg back to chain A.
      for (size_t i = 2; i < 4; i++) {
          const auto& block = chainA[i];
-         BOOST_REQUIRE(Assert(m_node.chainman)->ProcessNewBlock(Params(), block, true, nullptr));
+         BOOST_REQUIRE(Assert(m_node.chainman)->ProcessNewBlock(block, true, true, nullptr));
      }
 
      // Check that chain A and B blocks can be retrieved.
@@ -238,14 +194,14 @@ BOOST_FIXTURE_TEST_CASE(blockfilter_index_initial_sync, BuildChainTestingSetup)
              block_index = m_node.chainman->m_blockman.LookupBlockIndex(chainA[i]->GetHash());
          }
          BOOST_CHECK(filter_index.BlockUntilSyncedToCurrentChain());
-         CheckFilterLookups(filter_index, block_index, chainA_last_header);
+         CheckFilterLookups(filter_index, block_index, chainA_last_header, m_node.chainman->m_blockman);
 
          {
              LOCK(cs_main);
              block_index = m_node.chainman->m_blockman.LookupBlockIndex(chainB[i]->GetHash());
          }
          BOOST_CHECK(filter_index.BlockUntilSyncedToCurrentChain());
-         CheckFilterLookups(filter_index, block_index, chainB_last_header);
+         CheckFilterLookups(filter_index, block_index, chainB_last_header, m_node.chainman->m_blockman);
      }
 
     // Test lookups for a range of filters/hashes.
@@ -277,14 +233,14 @@ BOOST_FIXTURE_TEST_CASE(blockfilter_index_init_destroy, BasicTestingSetup)
     filter_index = GetBlockFilterIndex(BlockFilterType::BASIC);
     BOOST_CHECK(filter_index == nullptr);
 
-    BOOST_CHECK(InitBlockFilterIndex(BlockFilterType::BASIC, 1 << 20, true, false));
+    BOOST_CHECK(InitBlockFilterIndex([&]{ return interfaces::MakeChain(m_node); }, BlockFilterType::BASIC, 1_MiB, true, false));
 
     filter_index = GetBlockFilterIndex(BlockFilterType::BASIC);
     BOOST_CHECK(filter_index != nullptr);
     BOOST_CHECK(filter_index->GetFilterType() == BlockFilterType::BASIC);
 
     // Initialize returns false if index already exists.
-    BOOST_CHECK(!InitBlockFilterIndex(BlockFilterType::BASIC, 1 << 20, true, false));
+    BOOST_CHECK(!InitBlockFilterIndex([&]{ return interfaces::MakeChain(m_node); }, BlockFilterType::BASIC, 1_MiB, true, false));
 
     int iter_count = 0;
     ForEachBlockFilterIndex([&iter_count](BlockFilterIndex& _index) { iter_count++; });
@@ -299,7 +255,7 @@ BOOST_FIXTURE_TEST_CASE(blockfilter_index_init_destroy, BasicTestingSetup)
     BOOST_CHECK(filter_index == nullptr);
 
     // Reinitialize index.
-    BOOST_CHECK(InitBlockFilterIndex(BlockFilterType::BASIC, 1 << 20, true, false));
+    BOOST_CHECK(InitBlockFilterIndex([&]{ return interfaces::MakeChain(m_node); }, BlockFilterType::BASIC, 1_MiB, true, false));
 
     DestroyAllBlockFilterIndexes();
 

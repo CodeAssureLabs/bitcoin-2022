@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
-# Copyright (c) 2014-2021 The Bitcoin Core developers
+# Copyright (c) 2014-present The Bitcoin Core developers
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 """Test the pruning code.
 
 WARNING:
 This test uses 4GB of disk space.
-This test takes 30 mins or more (up to 2 hours)
 """
 import os
 
-from test_framework.blocktools import create_coinbase
-from test_framework.messages import CBlock
+from test_framework.blocktools import (
+    MIN_BLOCKS_TO_KEEP,
+    create_block,
+    create_coinbase,
+)
 from test_framework.script import (
     CScript,
     OP_NOP,
@@ -22,6 +24,7 @@ from test_framework.util import (
     assert_equal,
     assert_greater_than,
     assert_raises_rpc_error,
+    try_rpc,
 )
 
 # Rescans start at the earliest block up to 2 hours before a key timestamp, so
@@ -37,7 +40,7 @@ def mine_large_blocks(node, n):
     # Set the nTime if this is the first time this function has been called.
     # A static variable ensures that time is monotonicly increasing and is therefore
     # different for each block created => blockhash is unique.
-    if "nTimes" not in mine_large_blocks.__dict__:
+    if "nTime" not in mine_large_blocks.__dict__:
         mine_large_blocks.nTime = 0
 
     # Get the block parameters for the first block
@@ -48,27 +51,13 @@ def mine_large_blocks(node, n):
     previousblockhash = int(best_block["hash"], 16)
 
     for _ in range(n):
-        # Build the coinbase transaction (with large scriptPubKey)
-        coinbase_tx = create_coinbase(height)
-        coinbase_tx.vin[0].nSequence = 2 ** 32 - 1
-        coinbase_tx.vout[0].scriptPubKey = big_script
-        coinbase_tx.rehash()
-
-        # Build the block
-        block = CBlock()
-        block.nVersion = best_block["version"]
-        block.hashPrevBlock = previousblockhash
-        block.nTime = mine_large_blocks.nTime
-        block.nBits = int('207fffff', 16)
-        block.nNonce = 0
-        block.vtx = [coinbase_tx]
-        block.hashMerkleRoot = block.calc_merkle_root()
+        block = create_block(hashprev=previousblockhash, ntime=mine_large_blocks.nTime, coinbase=create_coinbase(height, script_pubkey=big_script))
         block.solve()
 
         # Submit to the node
         node.submitblock(block.serialize().hex())
 
-        previousblockhash = block.sha256
+        previousblockhash = block.hash_int
         height += 1
         mine_large_blocks.nTime += 1
 
@@ -79,7 +68,7 @@ class PruneTest(BitcoinTestFramework):
     def set_test_params(self):
         self.setup_clean_chain = True
         self.num_nodes = 6
-        self.supports_cli = False
+        self.uses_wallet = None
 
         # Create nodes 0 and 1 to mine.
         # Create node 2 to test pruning.
@@ -92,14 +81,14 @@ class PruneTest(BitcoinTestFramework):
             ["-maxreceivebuffer=20000", "-prune=550"],
             ["-maxreceivebuffer=20000"],
             ["-maxreceivebuffer=20000"],
-            ["-prune=550"],
+            ["-prune=550", "-blockfilterindex=1"],
         ]
         self.rpc_timeout = 120
 
     def setup_network(self):
         self.setup_nodes()
 
-        self.prunedir = os.path.join(self.nodes[2].datadir, self.chain, 'blocks', '')
+        self.prunedir = os.path.join(self.nodes[2].blocks_path, '')
 
         self.connect_nodes(0, 1)
         self.connect_nodes(1, 2)
@@ -125,6 +114,7 @@ class PruneTest(BitcoinTestFramework):
         self.sync_blocks(self.nodes[0:5])
 
     def test_invalid_command_line_options(self):
+        self.stop_node(0)
         self.nodes[0].assert_start_raises_init_error(
             expected_msg='Error: Prune cannot be configured with a negative value.',
             extra_args=['-prune=-1'],
@@ -138,9 +128,13 @@ class PruneTest(BitcoinTestFramework):
             extra_args=['-prune=550', '-txindex'],
         )
         self.nodes[0].assert_start_raises_init_error(
-            expected_msg='Error: Prune mode is incompatible with -coinstatsindex.',
-            extra_args=['-prune=550', '-coinstatsindex'],
+            expected_msg='Error: Prune mode is incompatible with -reindex-chainstate. Use full -reindex instead.',
+            extra_args=['-prune=550', '-reindex-chainstate'],
         )
+
+    def test_rescan_blockchain(self):
+        self.restart_node(0, ["-prune=550"])
+        assert_raises_rpc_error(-1, "Can't rescan beyond pruned data. Use RPC call getblockchaininfo to determine your pruned height.", self.nodes[0].rescanblockchain)
 
     def test_height_min(self):
         assert os.path.isfile(os.path.join(self.prunedir, "blk00000.dat")), "blk00000.dat is missing, pruning too early"
@@ -200,7 +194,7 @@ class PruneTest(BitcoinTestFramework):
             self.nodes[1].invalidateblock(curhash)
             curhash = self.nodes[1].getblockhash(self.forkheight - 1)
 
-        assert self.nodes[1].getblockcount() == self.forkheight - 1
+        assert_equal(self.nodes[1].getblockcount(), self.forkheight - 1)
         self.log.info(f"New best height: {self.nodes[1].getblockcount()}")
 
         # Disconnect node1 and generate the new chain
@@ -230,8 +224,8 @@ class PruneTest(BitcoinTestFramework):
     def reorg_back(self):
         # Verify that a block on the old main chain fork has been pruned away
         assert_raises_rpc_error(-1, "Block not available (pruned data)", self.nodes[2].getblock, self.forkhash)
-        with self.nodes[2].assert_debug_log(expected_msgs=['block verification stopping at height', '(pruning, no data)']):
-            self.nodes[2].verifychain(checklevel=4, nblocks=0)
+        with self.nodes[2].assert_debug_log(expected_msgs=["Block verification stopping at height", "(no data)"]):
+            assert not self.nodes[2].verifychain(checklevel=4, nblocks=0)
         self.log.info(f"Will need to redownload block {self.forkheight}")
 
         # Verify that we have enough history to reorg back to the fork point
@@ -241,8 +235,8 @@ class PruneTest(BitcoinTestFramework):
         self.nodes[2].getblock(self.nodes[2].getblockhash(self.forkheight))
 
         first_reorg_height = self.nodes[2].getblockcount()
-        curchainhash = self.nodes[2].getblockhash(self.mainchainheight)
-        self.nodes[2].invalidateblock(curchainhash)
+        block_hash_1295 = self.nodes[2].getblockhash(1295)
+        self.nodes[2].invalidateblock(block_hash_1295)
         goalbestheight = self.mainchainheight
         goalbesthash = self.mainchainhash2
 
@@ -257,7 +251,7 @@ class PruneTest(BitcoinTestFramework):
         if self.nodes[2].getblockcount() < self.mainchainheight:
             blocks_to_mine = first_reorg_height + 1 - self.mainchainheight
             self.log.info(f"Rewind node 0 to prev main chain to mine longer chain to trigger redownload. Blocks needed: {blocks_to_mine}")
-            self.nodes[0].invalidateblock(curchainhash)
+            self.nodes[0].invalidateblock(block_hash_1295)
             assert_equal(self.nodes[0].getblockcount(), self.mainchainheight)
             assert_equal(self.nodes[0].getbestblockhash(), self.mainchainhash2)
             goalbesthash = self.generate(self.nodes[0], blocks_to_mine, sync_fun=self.no_op)[-1]
@@ -290,10 +284,10 @@ class PruneTest(BitcoinTestFramework):
 
         def prune(index):
             ret = node.pruneblockchain(height=height(index))
-            assert_equal(ret, node.getblockchaininfo()['pruneheight'])
+            assert_equal(ret + 1, node.getblockchaininfo()['pruneheight'])
 
         def has_block(index):
-            return os.path.isfile(os.path.join(self.nodes[node_number].datadir, self.chain, "blocks", f"blk{index:05}.dat"))
+            return os.path.isfile(os.path.join(self.nodes[node_number].blocks_path, f"blk{index:05}.dat"))
 
         # should not prune because chain tip of node 3 (995) < PruneAfterHeight (1000)
         assert_raises_rpc_error(-1, "Blockchain is too short for pruning", node.pruneblockchain, height(500))
@@ -341,7 +335,7 @@ class PruneTest(BitcoinTestFramework):
         assert has_block(2), "blk00002.dat is still there, should be pruned by now"
 
         # advance the tip so blk00002.dat and blk00003.dat can be pruned (the last 288 blocks should now be in blk00004.dat)
-        self.generate(node, 288, sync_fun=self.no_op)
+        self.generate(node, MIN_BLOCKS_TO_KEEP, sync_fun=self.no_op)
         prune(1000)
         assert not has_block(2), "blk00002.dat is still there, should be pruned by now"
         assert not has_block(3), "blk00003.dat is still there, should be pruned by now"
@@ -351,20 +345,20 @@ class PruneTest(BitcoinTestFramework):
 
         self.log.info("Success")
 
-    def wallet_test(self):
+    def test_wallet_rescan(self):
         # check that the pruning node's wallet is still in good shape
         self.log.info("Stop and start pruning node to trigger wallet rescan")
         self.restart_node(2, extra_args=["-prune=550"])
-        self.log.info("Success")
+
+        self.wait_until(lambda: self.nodes[2].getwalletinfo()["scanning"] is False)
+        self.wait_until(lambda: self.nodes[2].getwalletinfo()["lastprocessedblock"]["height"] == self.nodes[2].getblockcount())
 
         # check that wallet loads successfully when restarting a pruned node after IBD.
         # this was reported to fail in #7494.
-        self.log.info("Syncing node 5 to test wallet")
-        self.connect_nodes(0, 5)
-        nds = [self.nodes[0], self.nodes[5]]
-        self.sync_blocks(nds, wait=5, timeout=300)
-        self.restart_node(5, extra_args=["-prune=550"]) # restart to trigger rescan
-        self.log.info("Success")
+        self.restart_node(5, extra_args=["-prune=550", "-blockfilterindex=1"]) # restart to trigger rescan
+
+        self.wait_until(lambda: self.nodes[5].getwalletinfo()["scanning"] is False)
+        self.wait_until(lambda: self.nodes[5].getwalletinfo()["lastprocessedblock"]["height"] == self.nodes[0].getblockcount())
 
     def run_test(self):
         self.log.info("Warning! This test requires 4GB of disk space")
@@ -472,14 +466,56 @@ class PruneTest(BitcoinTestFramework):
         self.log.info("Test manual pruning with timestamps")
         self.manual_test(4, use_timestamp=True)
 
+        self.log.info("Syncing node 5 to node 0")
+        self.connect_nodes(0, 5)
+        self.sync_blocks([self.nodes[0], self.nodes[5]], wait=5, timeout=300)
+
+        self.log.info("Test prune with a new index")
+        self.restart_node(0, extra_args=["-prune=550", "-blockfilterindex=1"])
+        node = self.nodes[0]
+        self.wait_until(lambda: node.getindexinfo()["basic block filter index"]["best_block_height"] >= 10, timeout=300)
+
         if self.is_wallet_compiled():
             self.log.info("Test wallet re-scan")
-            self.wallet_test()
+            self.test_wallet_rescan()
+
+            self.log.info("Test it's not possible to rescan beyond pruned data")
+            self.test_rescan_blockchain()
 
         self.log.info("Test invalid pruning command line options")
         self.test_invalid_command_line_options()
 
+        self.log.info("Test scanblocks can not return pruned data")
+        self.test_scanblocks_pruned()
+
+        self.log.info("Test pruneheight reflects the presence of block and undo data")
+        self.test_pruneheight_undo_presence()
+
         self.log.info("Done")
 
+    def test_scanblocks_pruned(self):
+        node = self.nodes[5]
+        genesis_blockhash = node.getblockhash(0)
+        false_positive_spk = bytes.fromhex("001400000000000000000000000000000000000cadcb")
+
+        assert genesis_blockhash in node.scanblocks(
+            "start", [{"desc": f"raw({false_positive_spk.hex()})"}], 0, 0)['relevant_blocks']
+
+        assert_raises_rpc_error(-1, "Block not available (pruned data)", node.scanblocks,
+            "start", [{"desc": f"raw({false_positive_spk.hex()})"}], 0, 0, "basic", {"filter_false_positives": True})
+
+    def test_pruneheight_undo_presence(self):
+        node = self.nodes[5]
+        pruneheight = node.getblockchaininfo()["pruneheight"]
+        fetch_block = node.getblockhash(pruneheight - 1)
+
+        self.connect_nodes(1, 5)
+        peers = node.getpeerinfo()
+        node.getblockfrompeer(fetch_block, peers[0]["id"])
+        self.wait_until(lambda: not try_rpc(-1, "Block not available (pruned data)", node.getblock, fetch_block), timeout=5)
+
+        new_pruneheight = node.getblockchaininfo()["pruneheight"]
+        assert_equal(pruneheight, new_pruneheight)
+
 if __name__ == '__main__':
-    PruneTest().main()
+    PruneTest(__file__).main()

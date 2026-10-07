@@ -1,27 +1,27 @@
 #!/usr/bin/env python3
-# Copyright (c) 2014-2021 The Bitcoin Core developers
+# Copyright (c) 2014-present The Bitcoin Core developers
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 """Test resurrection of mined transactions when the blockchain is re-organized."""
 
-from test_framework.blocktools import COINBASE_MATURITY
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import assert_equal
 from test_framework.wallet import MiniWallet
-
+from test_framework.blocktools import create_empty_fork
 
 class MempoolCoinbaseTest(BitcoinTestFramework):
     def set_test_params(self):
         self.num_nodes = 1
-        self.setup_clean_chain = True
+
+    def trigger_reorg(self, fork_blocks):
+        """Trigger reorg of the fork blocks."""
+        for block in fork_blocks:
+            self.nodes[0].submitblock(block.serialize().hex())
+        assert_equal(self.nodes[0].getbestblockhash(), fork_blocks[-1].hash_hex)
 
     def run_test(self):
         node = self.nodes[0]
         wallet = MiniWallet(node)
-
-        # Add enough mature utxos to the wallet so that all txs spend confirmed coins
-        self.generate(wallet, 3)
-        self.generate(node, COINBASE_MATURITY)
 
         # Spend block 1/2/3's coinbase transactions
         # Mine a block
@@ -32,6 +32,9 @@ class MempoolCoinbaseTest(BitcoinTestFramework):
         # ... make sure all the transactions are put back in the mempool
         # Mine a new block
         # ... make sure all the transactions are confirmed again
+
+        # Prep for fork
+        fork_blocks = create_empty_fork(self.nodes[0])
         blocks = []
         spends1_ids = [wallet.send_self_transfer(from_node=node)['txid'] for _ in range(3)]
         blocks.extend(self.generate(node, 1))
@@ -46,8 +49,8 @@ class MempoolCoinbaseTest(BitcoinTestFramework):
         # Checks that all spend txns are contained in the mined blocks
         assert spends_ids < confirmed_txns
 
-        # Use invalidateblock to re-org back
-        node.invalidateblock(blocks[0])
+        # Trigger reorg
+        self.trigger_reorg(fork_blocks)
 
         # All txns should be back in mempool with 0 confirmations
         assert_equal(set(node.getrawmempool()), spends_ids)
@@ -61,4 +64,4 @@ class MempoolCoinbaseTest(BitcoinTestFramework):
 
 
 if __name__ == '__main__':
-    MempoolCoinbaseTest().main()
+    MempoolCoinbaseTest(__file__).main()
