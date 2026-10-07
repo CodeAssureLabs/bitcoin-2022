@@ -200,7 +200,7 @@ class BlockchainTest(BitcoinTestFramework):
                     'timeout': 0x7fffffffffffffff,  # testdummy does not have a timeout so is set to the max int64 value
                     'min_activation_height': 0,
                     'status': 'started',
-                    'status-next': status_next,
+                    'status_next': status_next,
                     'since': 144,
                     'statistics': {
                         'period': 144,
@@ -220,7 +220,7 @@ class BlockchainTest(BitcoinTestFramework):
                     'timeout': 9223372036854775807,
                     'min_activation_height': 0,
                     'status': 'active',
-                    'status-next': 'active',
+                    'status_next': 'active',
                     'since': 0,
                 },
                 'height': 0,
@@ -261,12 +261,12 @@ class BlockchainTest(BitcoinTestFramework):
         assert_raises_rpc_error(-1, 'getchaintxstats', self.nodes[0].getchaintxstats, 0, '', 0)
 
         # Test `getchaintxstats` invalid `nblocks`
-        assert_raises_rpc_error(-1, "JSON value is not an integer as expected", self.nodes[0].getchaintxstats, '')
+        assert_raises_rpc_error(-1, "JSON value of type string is not of expected type number", self.nodes[0].getchaintxstats, '')
         assert_raises_rpc_error(-8, "Invalid block count: should be between 0 and the block's height - 1", self.nodes[0].getchaintxstats, -1)
         assert_raises_rpc_error(-8, "Invalid block count: should be between 0 and the block's height - 1", self.nodes[0].getchaintxstats, self.nodes[0].getblockcount())
 
         # Test `getchaintxstats` invalid `blockhash`
-        assert_raises_rpc_error(-1, "JSON value is not a string as expected", self.nodes[0].getchaintxstats, blockhash=0)
+        assert_raises_rpc_error(-1, "JSON value of type number is not of expected type string", self.nodes[0].getchaintxstats, blockhash=0)
         assert_raises_rpc_error(-8, "blockhash must be of length 64 (not 1, for '0')", self.nodes[0].getchaintxstats, blockhash='0')
         assert_raises_rpc_error(-8, "blockhash must be hexadecimal string (not 'ZZZ0000000000000000000000000000000000000000000000000000000000000')", self.nodes[0].getchaintxstats, blockhash='ZZZ0000000000000000000000000000000000000000000000000000000000000')
         assert_raises_rpc_error(-5, "Block not found", self.nodes[0].getchaintxstats, blockhash='0000000000000000000000000000000000000000000000000000000000000000')
@@ -536,7 +536,7 @@ class BlockchainTest(BitcoinTestFramework):
         datadir = get_datadir_path(self.options.tmpdir, 0)
 
         self.log.info("Test getblock with invalid verbosity type returns proper error message")
-        assert_raises_rpc_error(-1, "JSON value is not an integer as expected", node.getblock, blockhash, "2")
+        assert_raises_rpc_error(-1, "JSON value of type string is not of expected type number", node.getblock, blockhash, "2")
 
         def move_block_file(old, new):
             old_path = os.path.join(datadir, self.chain, 'blocks', old)

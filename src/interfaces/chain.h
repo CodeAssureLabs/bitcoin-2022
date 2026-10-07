@@ -111,6 +111,10 @@ public:
     //! Get locator for the current chain tip.
     virtual CBlockLocator getTipLocator() = 0;
 
+    //! Return a locator that refers to a block in the active chain.
+    //! If specified block is not in the active chain, return locator for the latest ancestor that is in the chain.
+    virtual CBlockLocator getActiveChainLocator(const uint256& block_hash) = 0;
+
     //! Return height of the highest block on chain in common with the locator,
     //! which will either be the original block used to create the locator,
     //! or one of its ancestors.
@@ -283,6 +287,9 @@ public:
     //! to be prepared to handle this by ignoring notifications about unknown
     //! removed transactions and already added new transactions.
     virtual void requestMempoolTransactions(Notifications& notifications) = 0;
+
+    //! Return true if an assumed-valid chain is in use.
+    virtual bool hasAssumedValidChain() = 0;
 };
 
 //! Interface to let node manage chain clients (wallets, or maybe tools for

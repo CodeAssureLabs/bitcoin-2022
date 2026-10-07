@@ -123,17 +123,17 @@ static CAmount GetCachableAmount(const CWallet& wallet, const CWalletTx& wtx, CW
 
 CAmount CachedTxGetCredit(const CWallet& wallet, const CWalletTx& wtx, const isminefilter& filter)
 {
+    AssertLockHeld(wallet.cs_wallet);
+
     // Must wait until coinbase is safely deep enough in the chain before valuing it
     if (wallet.IsTxImmatureCoinBase(wtx))
         return 0;
 
     CAmount credit = 0;
-    if (filter & ISMINE_SPENDABLE) {
+    const isminefilter get_amount_filter{filter & ISMINE_ALL};
+    if (get_amount_filter) {
         // GetBalance can assume transactions in mapWallet won't change
-        credit += GetCachableAmount(wallet, wtx, CWalletTx::CREDIT, ISMINE_SPENDABLE);
-    }
-    if (filter & ISMINE_WATCH_ONLY) {
-        credit += GetCachableAmount(wallet, wtx, CWalletTx::CREDIT, ISMINE_WATCH_ONLY);
+        credit += GetCachableAmount(wallet, wtx, CWalletTx::CREDIT, get_amount_filter);
     }
     return credit;
 }
@@ -144,11 +144,9 @@ CAmount CachedTxGetDebit(const CWallet& wallet, const CWalletTx& wtx, const ismi
         return 0;
 
     CAmount debit = 0;
-    if (filter & ISMINE_SPENDABLE) {
-        debit += GetCachableAmount(wallet, wtx, CWalletTx::DEBIT, ISMINE_SPENDABLE);
-    }
-    if (filter & ISMINE_WATCH_ONLY) {
-        debit += GetCachableAmount(wallet, wtx, CWalletTx::DEBIT, ISMINE_WATCH_ONLY);
+    const isminefilter get_amount_filter{filter & ISMINE_ALL};
+    if (get_amount_filter) {
+        debit += GetCachableAmount(wallet, wtx, CWalletTx::DEBIT, get_amount_filter);
     }
     return debit;
 }
@@ -164,6 +162,8 @@ CAmount CachedTxGetChange(const CWallet& wallet, const CWalletTx& wtx)
 
 CAmount CachedTxGetImmatureCredit(const CWallet& wallet, const CWalletTx& wtx, bool fUseCache)
 {
+    AssertLockHeld(wallet.cs_wallet);
+
     if (wallet.IsTxImmatureCoinBase(wtx) && wallet.IsTxInMainChain(wtx)) {
         return GetCachableAmount(wallet, wtx, CWalletTx::IMMATURE_CREDIT, ISMINE_SPENDABLE, !fUseCache);
     }
@@ -173,6 +173,8 @@ CAmount CachedTxGetImmatureCredit(const CWallet& wallet, const CWalletTx& wtx, b
 
 CAmount CachedTxGetImmatureWatchOnlyCredit(const CWallet& wallet, const CWalletTx& wtx, const bool fUseCache)
 {
+    AssertLockHeld(wallet.cs_wallet);
+
     if (wallet.IsTxImmatureCoinBase(wtx) && wallet.IsTxInMainChain(wtx)) {
         return GetCachableAmount(wallet, wtx, CWalletTx::IMMATURE_CREDIT, ISMINE_WATCH_ONLY, !fUseCache);
     }
@@ -182,6 +184,8 @@ CAmount CachedTxGetImmatureWatchOnlyCredit(const CWallet& wallet, const CWalletT
 
 CAmount CachedTxGetAvailableCredit(const CWallet& wallet, const CWalletTx& wtx, bool fUseCache, const isminefilter& filter)
 {
+    AssertLockHeld(wallet.cs_wallet);
+
     // Avoid caching ismine for NO or ALL cases (could remove this check and simplify in the future).
     bool allow_cache = (filter & ISMINE_ALL) && (filter & ISMINE_ALL) != ISMINE_ALL;
 
@@ -196,10 +200,9 @@ CAmount CachedTxGetAvailableCredit(const CWallet& wallet, const CWalletTx& wtx, 
     bool allow_used_addresses = (filter & ISMINE_USED) || !wallet.IsWalletFlagSet(WALLET_FLAG_AVOID_REUSE);
     CAmount nCredit = 0;
     uint256 hashTx = wtx.GetHash();
-    for (unsigned int i = 0; i < wtx.tx->vout.size(); i++)
-    {
-        if (!wallet.IsSpent(hashTx, i) && (allow_used_addresses || !wallet.IsSpentKey(hashTx, i))) {
-            const CTxOut &txout = wtx.tx->vout[i];
+    for (unsigned int i = 0; i < wtx.tx->vout.size(); i++) {
+        const CTxOut& txout = wtx.tx->vout[i];
+        if (!wallet.IsSpent(COutPoint(hashTx, i)) && (allow_used_addresses || !wallet.IsSpentKey(txout.scriptPubKey))) {
             nCredit += OutputGetCredit(wallet, txout, filter);
             if (!MoneyRange(nCredit))
                 throw std::runtime_error(std::string(__func__) + " : value out of range");
@@ -325,8 +328,8 @@ Balance GetBalance(const CWallet& wallet, const int min_depth, bool avoid_reuse)
             const CWalletTx& wtx = entry.second;
             const bool is_trusted{CachedTxIsTrusted(wallet, wtx, trusted_parents)};
             const int tx_depth{wallet.GetTxDepthInMainChain(wtx)};
-            const CAmount tx_credit_mine{CachedTxGetAvailableCredit(wallet, wtx, /* fUseCache */ true, ISMINE_SPENDABLE | reuse_filter)};
-            const CAmount tx_credit_watchonly{CachedTxGetAvailableCredit(wallet, wtx, /* fUseCache */ true, ISMINE_WATCH_ONLY | reuse_filter)};
+            const CAmount tx_credit_mine{CachedTxGetAvailableCredit(wallet, wtx, /*fUseCache=*/true, ISMINE_SPENDABLE | reuse_filter)};
+            const CAmount tx_credit_watchonly{CachedTxGetAvailableCredit(wallet, wtx, /*fUseCache=*/true, ISMINE_WATCH_ONLY | reuse_filter)};
             if (is_trusted && tx_depth >= min_depth) {
                 ret.m_mine_trusted += tx_credit_mine;
                 ret.m_watchonly_trusted += tx_credit_watchonly;
@@ -363,15 +366,15 @@ std::map<CTxDestination, CAmount> GetAddressBalances(const CWallet& wallet)
             if (nDepth < (CachedTxIsFromMe(wallet, wtx, ISMINE_ALL) ? 0 : 1))
                 continue;
 
-            for (unsigned int i = 0; i < wtx.tx->vout.size(); i++)
-            {
+            for (unsigned int i = 0; i < wtx.tx->vout.size(); i++) {
+                const auto& output = wtx.tx->vout[i];
                 CTxDestination addr;
-                if (!wallet.IsMine(wtx.tx->vout[i]))
+                if (!wallet.IsMine(output))
                     continue;
-                if(!ExtractDestination(wtx.tx->vout[i].scriptPubKey, addr))
+                if(!ExtractDestination(output.scriptPubKey, addr))
                     continue;
 
-                CAmount n = wallet.IsSpent(walletEntry.first, i) ? 0 : wtx.tx->vout[i].nValue;
+                CAmount n = wallet.IsSpent(COutPoint(walletEntry.first, i)) ? 0 : output.nValue;
                 balances[addr] += n;
             }
         }
