@@ -49,7 +49,7 @@ constexpr const int kDefaultMmapLimit = (sizeof(void*) >= 8) ? 4096 : 0;
 int g_mmap_limit = kDefaultMmapLimit;
 
 // Common flags defined for all posix open operations
-#if defined(HAVE_O_CLOEXEC)
+#if HAVE_O_CLOEXEC
 constexpr const int kOpenBaseFlags = O_CLOEXEC;
 #else
 constexpr const int kOpenBaseFlags = 0;
@@ -850,13 +850,17 @@ class SingletonEnv {
  public:
   SingletonEnv() {
 #if !defined(NDEBUG)
-    env_initialized_.store(true, std::memory_order::memory_order_relaxed);
+    env_initialized_.store(true, std::memory_order_relaxed);
 #endif  // !defined(NDEBUG)
     static_assert(sizeof(env_storage_) >= sizeof(EnvType),
                   "env_storage_ will not fit the Env");
-    static_assert(alignof(decltype(env_storage_)) >= alignof(EnvType),
+    static_assert(std::is_standard_layout_v<SingletonEnv<EnvType>>);
+    static_assert(
+        offsetof(SingletonEnv<EnvType>, env_storage_) % alignof(EnvType) == 0,
+        "env_storage_ does not meet the Env's alignment needs");
+    static_assert(alignof(SingletonEnv<EnvType>) % alignof(EnvType) == 0,
                   "env_storage_ does not meet the Env's alignment needs");
-    new (&env_storage_) EnvType();
+    new (env_storage_) EnvType();
   }
   ~SingletonEnv() = default;
 
@@ -867,13 +871,12 @@ class SingletonEnv {
 
   static void AssertEnvNotInitialized() {
 #if !defined(NDEBUG)
-    assert(!env_initialized_.load(std::memory_order::memory_order_relaxed));
+    assert(!env_initialized_.load(std::memory_order_relaxed));
 #endif  // !defined(NDEBUG)
   }
 
  private:
-  typename std::aligned_storage<sizeof(EnvType), alignof(EnvType)>::type
-      env_storage_;
+  alignas(EnvType) char env_storage_[sizeof(EnvType)];
 #if !defined(NDEBUG)
   static std::atomic<bool> env_initialized_;
 #endif  // !defined(NDEBUG)
