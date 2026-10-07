@@ -21,6 +21,7 @@
 #include <primitives/block.h>
 #include <primitives/transaction.h>
 #include <psbt.h>
+#include <qt/guiconstants.h>
 #include <script/descriptor.h>
 #include <script/script.h>
 #include <script/signingprovider.h>
@@ -660,6 +661,13 @@ bool CWallet::EncryptWallet(const SecureString& strWalletPassphrase)
 {
     if (IsCrypted())
         return false;
+
+    // Mirror the GUI's AskPassphraseDialog limit so a passphrase that could never
+    // be typed into the GUI cannot be set over RPC either.
+    if (strWalletPassphrase.size() > static_cast<size_t>(MAX_PASSPHRASE_SIZE)) {
+        WalletLogPrintf("Refusing to encrypt wallet: passphrase longer than %d characters\n", MAX_PASSPHRASE_SIZE);
+        return false;
+    }
 
     CKeyingMaterial _vMasterKey;
 
