@@ -235,12 +235,6 @@ PosixLockedPageAllocator::PosixLockedPageAllocator()
 #endif
 }
 
-// Some systems (at least OS X) do not define MAP_ANONYMOUS yet and define
-// MAP_ANON which is deprecated
-#ifndef MAP_ANONYMOUS
-#define MAP_ANONYMOUS MAP_ANON
-#endif
-
 void *PosixLockedPageAllocator::AllocateLocked(size_t len, bool *lockingSuccess)
 {
     void *addr;
@@ -288,9 +282,8 @@ LockedPool::LockedPool(std::unique_ptr<LockedPageAllocator> allocator_in, Lockin
 {
 }
 
-LockedPool::~LockedPool()
-{
-}
+LockedPool::~LockedPool() = default;
+
 void* LockedPool::alloc(size_t size)
 {
     std::lock_guard<std::mutex> lock(mutex);

@@ -1,16 +1,6 @@
-*After branching off for a major version release of Bitcoin Core, use this
-template to create the initial release notes draft.*
-
 *The release notes draft is a temporary file that can be added to by anyone. See
 [/doc/developer-notes.md#release-notes](/doc/developer-notes.md#release-notes)
 for the process.*
-
-*Create the draft, named* "*version* Release Notes Draft"
-*(e.g. "23.0 Release Notes Draft"), as a collaborative wiki in:*
-
-https://github.com/bitcoin-core/bitcoin-devwiki/wiki/
-
-*Before the final release, move the notes back to this git repository.*
 
 *version* Release Notes Draft
 ===============================
@@ -54,8 +44,64 @@ unsupported systems.
 Notable changes
 ===============
 
-Example item
+P2P and network changes
+-----------------------
+
+Updated RPCs
 ------------
+
+- The `-deprecatedrpc=softforks` configuration option has been removed.  The
+  RPC `getblockchaininfo` no longer returns the `softforks` field, which was
+  previously deprecated in 23.0. (#23508) Information on soft fork status is
+  now only available via the `getdeploymentinfo` RPC.
+
+- The `deprecatedrpc=exclude_coinbase` configuration option has been removed.
+  The `receivedby` RPCs (`listreceivedbyaddress`, `listreceivedbylabel`,
+  `getreceivedbyaddress` and `getreceivedbylabel`) now always return results
+  accounting for received coins from coinbase outputs, without an option to
+  change that behaviour. Excluding coinbases was previously deprecated in 23.0.
+  (#25171)
+
+Changes to wallet related RPCs can be found in the Wallet section below.
+
+New RPCs
+--------
+
+Build System
+------------
+
+Updated settings
+----------------
+
+
+Changes to GUI or wallet related settings can be found in the GUI or Wallet section below.
+
+New settings
+------------
+
+Tools and Utilities
+-------------------
+
+Wallet
+------
+
+- RPC `getreceivedbylabel` now returns an error, "Label not found
+  in wallet" (-4), if the label is not in the address book. (#25122)
+
+GUI changes
+-----------
+
+Low-level changes
+=================
+
+RPC
+---
+
+Tests
+-----
+
+*version* change log
+====================
 
 Credits
 =======
